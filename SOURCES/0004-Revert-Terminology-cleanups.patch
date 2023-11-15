@@ -1,0 +1,899 @@
+From d8a8d96450bf0d3458671b9b7d23d972aa540396 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 26 May 2021 12:27:34 +0200
+Subject: [PATCH] Revert "Terminology cleanups"
+
+This reverts following commits:
+- 3d46339fe9cf12e9082fcbe4dc5acc9f92617e8d
+- 63c9c7165e5cdfa4a47dcf0ed9d717b71e7921f2
+- 8956b9af8a785ae25e0e7153d2ef0702ce2f567c
+---
+ blivet/devicefactory.py                       | 24 +++----
+ blivet/devices/dm.py                          |  9 ++-
+ blivet/devices/loop.py                        | 20 +++---
+ blivet/devices/luks.py                        | 26 ++++---
+ blivet/errors.py                              |  2 +-
+ blivet/partitioning.py                        | 22 +++++-
+ blivet/populator/helpers/dm.py                |  4 +-
+ blivet/populator/helpers/luks.py              |  4 +-
+ blivet/populator/helpers/lvm.py               |  2 +-
+ blivet/populator/helpers/mdraid.py            | 14 ++--
+ blivet/populator/helpers/multipath.py         |  8 +--
+ blivet/populator/populator.py                 | 67 ++++++++++---------
+ blivet/threads.py                             |  3 +-
+ blivet/udev.py                                | 34 +++++-----
+ tests/unit_tests/devicefactory_test.py        | 10 +--
+ .../devices_test/device_size_test.py          |  6 +-
+ tests/unit_tests/populator_test.py            | 34 +++++-----
+ tests/unit_tests/udev_test.py                 | 12 ++--
+ tests/vmtests/vmbackedtestcase.py             |  2 +-
+ 19 files changed, 167 insertions(+), 136 deletions(-)
+
+diff --git a/blivet/devicefactory.py b/blivet/devicefactory.py
+index 6f460f6d..90082c28 100644
+--- a/blivet/devicefactory.py
++++ b/blivet/devicefactory.py
+@@ -859,12 +859,12 @@ class DeviceFactory(object):
+                 parent_container.parents.remove(orig_device)
+ 
+         if self.encrypted and isinstance(self.device, LUKSDevice) and \
+-                self.raw_device.format.luks_version != self.luks_version:
+-            self.raw_device.format.luks_version = self.luks_version
++                self.device.slave.format.luks_version != self.luks_version:
++            self.device.slave.format.luks_version = self.luks_version
+ 
+         if self.encrypted and isinstance(self.device, LUKSDevice) and \
+-                self.raw_device.format.luks_sector_size != self.luks_sector_size:
+-            self.raw_device.format.luks_sector_size = self.luks_sector_size
++                self.device.slave.format.luks_sector_size != self.luks_sector_size:
++            self.device.slave.format.luks_sector_size = self.luks_sector_size
+ 
+     def _set_name(self):
+         if not self.device_name:
+@@ -1201,11 +1201,11 @@ class PartitionSetFactory(PartitionFactory):
+                     container.parents.remove(member)
+                 self.storage.destroy_device(member)
+                 members.remove(member)
+-                self.storage.format_device(member.raw_device,
++                self.storage.format_device(member.slave,
+                                            get_format(self.fstype))
+-                members.append(member.raw_device)
++                members.append(member.slave)
+                 if container:
+-                    container.parents.append(member.raw_device)
++                    container.parents.append(member.slave)
+ 
+                 continue
+ 
+@@ -1227,10 +1227,10 @@ class PartitionSetFactory(PartitionFactory):
+ 
+                 continue
+ 
+-            if member_encrypted and self.encrypted and self.luks_version != member.raw_device.format.luks_version:
+-                member.raw_device.format.luks_version = self.luks_version
+-            if member_encrypted and self.encrypted and self.luks_sector_size != member.raw_device.format.luks_sector_size:
+-                member.raw_device.format.luks_sector_size = self.luks_sector_size
++            if member_encrypted and self.encrypted and self.luks_version != member.slave.format.luks_version:
++                member.slave.format.luks_version = self.luks_version
++            if member_encrypted and self.encrypted and self.luks_sector_size != member.slave.format.luks_sector_size:
++                member.slave.format.luks_sector_size = self.luks_sector_size
+ 
+         ##
+         # Prepare previously allocated member partitions for reallocation.
+@@ -1290,7 +1290,7 @@ class PartitionSetFactory(PartitionFactory):
+ 
+             if isinstance(member, LUKSDevice):
+                 self.storage.destroy_device(member)
+-                member = member.raw_device
++                member = member.slave
+ 
+             self.storage.destroy_device(member)
+ 
+diff --git a/blivet/devices/dm.py b/blivet/devices/dm.py
+index 2f936170..ae25e8e6 100644
+--- a/blivet/devices/dm.py
++++ b/blivet/devices/dm.py
+@@ -154,6 +154,11 @@ class DMDevice(StorageDevice):
+         log_method_call(self, self.name, status=self.status)
+         super(DMDevice, self)._set_name(value)
+ 
++    @property
++    def slave(self):
++        """ This device's backing device. """
++        return self.parents[0]
++
+ 
+ class DMLinearDevice(DMDevice):
+     _type = "dm-linear"
+@@ -189,8 +194,8 @@ class DMLinearDevice(DMDevice):
+         """ Open, or set up, a device. """
+         log_method_call(self, self.name, orig=orig, status=self.status,
+                         controllable=self.controllable)
+-        parent_length = self.parents[0].current_size / LINUX_SECTOR_SIZE
+-        blockdev.dm.create_linear(self.name, self.parents[0].path, parent_length,
++        slave_length = self.slave.current_size / LINUX_SECTOR_SIZE
++        blockdev.dm.create_linear(self.name, self.slave.path, slave_length,
+                                   self.dm_uuid)
+ 
+     def _post_setup(self):
+diff --git a/blivet/devices/loop.py b/blivet/devices/loop.py
+index 0f4d7775..78f88d7d 100644
+--- a/blivet/devices/loop.py
++++ b/blivet/devices/loop.py
+@@ -73,7 +73,7 @@ class LoopDevice(StorageDevice):
+ 
+     def update_name(self):
+         """ Update this device's name. """
+-        if not self.parents[0].status:
++        if not self.slave.status:
+             # if the backing device is inactive, so are we
+             return self.name
+ 
+@@ -81,7 +81,7 @@ class LoopDevice(StorageDevice):
+             # if our name is loopN we must already be active
+             return self.name
+ 
+-        name = blockdev.loop.get_loop_name(self.parents[0].path)
++        name = blockdev.loop.get_loop_name(self.slave.path)
+         if name.startswith("loop"):
+             self.name = name
+ 
+@@ -89,24 +89,24 @@ class LoopDevice(StorageDevice):
+ 
+     @property
+     def status(self):
+-        return (self.parents[0].status and
++        return (self.slave.status and
+                 self.name.startswith("loop") and
+-                blockdev.loop.get_loop_name(self.parents[0].path) == self.name)
++                blockdev.loop.get_loop_name(self.slave.path) == self.name)
+ 
+     @property
+     def size(self):
+-        return self.parents[0].size
++        return self.slave.size
+ 
+     def _pre_setup(self, orig=False):
+-        if not os.path.exists(self.parents[0].path):
+-            raise errors.DeviceError("specified file (%s) does not exist" % self.parents[0].path)
++        if not os.path.exists(self.slave.path):
++            raise errors.DeviceError("specified file (%s) does not exist" % self.slave.path)
+         return StorageDevice._pre_setup(self, orig=orig)
+ 
+     def _setup(self, orig=False):
+         """ Open, or set up, a device. """
+         log_method_call(self, self.name, orig=orig, status=self.status,
+                         controllable=self.controllable)
+-        blockdev.loop.setup(self.parents[0].path)
++        blockdev.loop.setup(self.slave.path)
+ 
+     def _post_setup(self):
+         StorageDevice._post_setup(self)
+@@ -123,3 +123,7 @@ class LoopDevice(StorageDevice):
+         StorageDevice._post_teardown(self, recursive=recursive)
+         self.name = "tmploop%d" % self.id
+         self.sysfs_path = ''
++
++    @property
++    def slave(self):
++        return self.parents[0]
+diff --git a/blivet/devices/luks.py b/blivet/devices/luks.py
+index 2eb1f130..5ab840ea 100644
+--- a/blivet/devices/luks.py
++++ b/blivet/devices/luks.py
+@@ -66,13 +66,17 @@ class LUKSDevice(DMCryptDevice):
+ 
+     @property
+     def raw_device(self):
++        return self.slave
++
++    @property
++    def slave(self):
+         if self._has_integrity:
+             return self.parents[0].parents[0]
+         return self.parents[0]
+ 
+     def _get_size(self):
+         if not self.exists:
+-            size = self.raw_device.size - crypto.LUKS_METADATA_SIZE
++            size = self.slave.size - crypto.LUKS_METADATA_SIZE
+         elif self.resizable and self.target_size != Size(0):
+             size = self.target_size
+         else:
+@@ -80,8 +84,8 @@ class LUKSDevice(DMCryptDevice):
+         return size
+ 
+     def _set_size(self, newsize):
+-        if not self.exists and not self.raw_device.exists:
+-            self.raw_device.size = newsize + crypto.LUKS_METADATA_SIZE
++        if not self.exists and not self.slave.exists:
++            self.slave.size = newsize + crypto.LUKS_METADATA_SIZE
+ 
+             # just run the StorageDevice._set_size to make sure we are in the format limits
+             super(LUKSDevice, self)._set_size(newsize - crypto.LUKS_METADATA_SIZE)
+@@ -108,22 +112,22 @@ class LUKSDevice(DMCryptDevice):
+             raise ValueError("size is smaller than the minimum for this device")
+ 
+         # don't allow larger luks than size (or target size) of backing device
+-        if newsize > (self.raw_device.size - crypto.LUKS_METADATA_SIZE):
++        if newsize > (self.slave.size - crypto.LUKS_METADATA_SIZE):
+             log.error("requested size %s is larger than size of the backing device %s",
+-                      newsize, self.raw_device.size)
++                      newsize, self.slave.size)
+             raise ValueError("size is larger than the size of the backing device")
+ 
+         if self.align_target_size(newsize) != newsize:
+             raise ValueError("new size would violate alignment requirements")
+ 
+     def _get_target_size(self):
+-        return self.raw_device.format.target_size
++        return self.slave.format.target_size
+ 
+     @property
+     def max_size(self):
+         """ The maximum size this luks device can be. Maximum is based on the
+             maximum size of the backing device. """
+-        max_luks = self.raw_device.max_size - crypto.LUKS_METADATA_SIZE
++        max_luks = self.slave.max_size - crypto.LUKS_METADATA_SIZE
+         max_format = self.format.max_size
+         return min(max_luks, max_format) if max_format else max_luks
+ 
+@@ -131,7 +135,7 @@ class LUKSDevice(DMCryptDevice):
+     def resizable(self):
+         """ Can this device be resized? """
+         return (self._resizable and self.exists and self.format.resizable and
+-                self.raw_device.resizable and not self._has_integrity)
++                self.slave.resizable and not self._has_integrity)
+ 
+     def resize(self):
+         # size of LUKSDevice depends on size of the LUKS format on backing
+@@ -139,7 +143,7 @@ class LUKSDevice(DMCryptDevice):
+         log_method_call(self, self.name, status=self.status)
+ 
+     def _post_create(self):
+-        self.name = self.raw_device.format.map_name
++        self.name = self.slave.format.map_name
+         StorageDevice._post_create(self)
+ 
+     def _post_teardown(self, recursive=False):
+@@ -162,10 +166,10 @@ class LUKSDevice(DMCryptDevice):
+             self.name = new_name
+ 
+     def dracut_setup_args(self):
+-        return set(["rd.luks.uuid=luks-%s" % self.raw_device.format.uuid])
++        return set(["rd.luks.uuid=luks-%s" % self.slave.format.uuid])
+ 
+     def populate_ksdata(self, data):
+-        self.raw_device.populate_ksdata(data)
++        self.slave.populate_ksdata(data)
+         data.encrypted = True
+         super(LUKSDevice, self).populate_ksdata(data)
+ 
+diff --git a/blivet/errors.py b/blivet/errors.py
+index b886ffec..30c9921a 100644
+--- a/blivet/errors.py
++++ b/blivet/errors.py
+@@ -201,7 +201,7 @@ class DeviceTreeError(StorageError):
+     pass
+ 
+ 
+-class NoParentsError(DeviceTreeError):
++class NoSlavesError(DeviceTreeError):
+     pass
+ 
+ 
+diff --git a/blivet/partitioning.py b/blivet/partitioning.py
+index ce77e4eb..2cd6554c 100644
+--- a/blivet/partitioning.py
++++ b/blivet/partitioning.py
+@@ -32,7 +32,7 @@ import _ped
+ 
+ from .errors import DeviceError, PartitioningError, AlignmentError
+ from .flags import flags
+-from .devices import Device, PartitionDevice, device_path_to_name
++from .devices import Device, PartitionDevice, LUKSDevice, device_path_to_name
+ from .size import Size
+ from .i18n import _
+ from .util import stringize, unicodeize, compare
+@@ -1635,7 +1635,15 @@ class TotalSizeSet(object):
+             :param size: the target combined size
+             :type size: :class:`~.size.Size`
+         """
+-        self.devices = [d.raw_device for d in devices]
++        self.devices = []
++        for device in devices:
++            if isinstance(device, LUKSDevice):
++                partition = device.slave
++            else:
++                partition = device
++
++            self.devices.append(partition)
++
+         self.size = size
+ 
+         self.requests = []
+@@ -1673,7 +1681,15 @@ class SameSizeSet(object):
+             :keyword max_size: the maximum size for growable devices
+             :type max_size: :class:`~.size.Size`
+         """
+-        self.devices = [d.raw_device for d in devices]
++        self.devices = []
++        for device in devices:
++            if isinstance(device, LUKSDevice):
++                partition = device.slave
++            else:
++                partition = device
++
++            self.devices.append(partition)
++
+         self.size = size / len(devices)
+         self.grow = grow
+         self.max_size = max_size
+diff --git a/blivet/populator/helpers/dm.py b/blivet/populator/helpers/dm.py
+index 4721390e..0ad065e2 100644
+--- a/blivet/populator/helpers/dm.py
++++ b/blivet/populator/helpers/dm.py
+@@ -47,13 +47,13 @@ class DMDevicePopulator(DevicePopulator):
+         name = udev.device_get_name(self.data)
+         log_method_call(self, name=name)
+         sysfs_path = udev.device_get_sysfs_path(self.data)
+-        parent_devices = self._devicetree._add_parent_devices(self.data)
++        slave_devices = self._devicetree._add_slave_devices(self.data)
+         device = self._devicetree.get_device_by_name(name)
+ 
+         if device is None:
+             device = DMDevice(name, dm_uuid=self.data.get('DM_UUID'),
+                               sysfs_path=sysfs_path, exists=True,
+-                              parents=[parent_devices[0]])
++                              parents=[slave_devices[0]])
+             device.protected = True
+             device.controllable = False
+             self._devicetree._add_device(device)
+diff --git a/blivet/populator/helpers/luks.py b/blivet/populator/helpers/luks.py
+index 3221122a..9b5023f8 100644
+--- a/blivet/populator/helpers/luks.py
++++ b/blivet/populator/helpers/luks.py
+@@ -43,7 +43,7 @@ class LUKSDevicePopulator(DevicePopulator):
+         return udev.device_is_dm_luks(data)
+ 
+     def run(self):
+-        parents = self._devicetree._add_parent_devices(self.data)
++        parents = self._devicetree._add_slave_devices(self.data)
+         device = LUKSDevice(udev.device_get_name(self.data),
+                             sysfs_path=udev.device_get_sysfs_path(self.data),
+                             parents=parents,
+@@ -58,7 +58,7 @@ class IntegrityDevicePopulator(DevicePopulator):
+         return udev.device_is_dm_integrity(data)
+ 
+     def run(self):
+-        parents = self._devicetree._add_parent_devices(self.data)
++        parents = self._devicetree._add_slave_devices(self.data)
+         name = udev.device_get_name(self.data)
+ 
+         try:
+diff --git a/blivet/populator/helpers/lvm.py b/blivet/populator/helpers/lvm.py
+index 6ef2f417..b549e8d3 100644
+--- a/blivet/populator/helpers/lvm.py
++++ b/blivet/populator/helpers/lvm.py
+@@ -58,7 +58,7 @@ class LVMDevicePopulator(DevicePopulator):
+             log.warning("found non-vg device with name %s", vg_name)
+             device = None
+ 
+-        self._devicetree._add_parent_devices(self.data)
++        self._devicetree._add_slave_devices(self.data)
+ 
+         # LVM provides no means to resolve conflicts caused by duplicated VG
+         # names, so we're just being optimistic here. Woo!
+diff --git a/blivet/populator/helpers/mdraid.py b/blivet/populator/helpers/mdraid.py
+index a7602d20..9bec11ef 100644
+--- a/blivet/populator/helpers/mdraid.py
++++ b/blivet/populator/helpers/mdraid.py
+@@ -31,7 +31,7 @@ from ... import udev
+ from ...devicelibs import raid
+ from ...devices import MDRaidArrayDevice, MDContainerDevice
+ from ...devices import device_path_to_name
+-from ...errors import DeviceError, NoParentsError
++from ...errors import DeviceError, NoSlavesError
+ from ...flags import flags
+ from ...storage_log import log_method_call
+ from .devicepopulator import DevicePopulator
+@@ -52,12 +52,12 @@ class MDDevicePopulator(DevicePopulator):
+         log_method_call(self, name=name)
+ 
+         try:
+-            self._devicetree._add_parent_devices(self.data)
+-        except NoParentsError:
+-            log.error("no parents found for mdarray %s, skipping", name)
++            self._devicetree._add_slave_devices(self.data)
++        except NoSlavesError:
++            log.error("no slaves found for mdarray %s, skipping", name)
+             return None
+ 
+-        # try to get the device again now that we've got all the parents
++        # try to get the device again now that we've got all the slaves
+         device = self._devicetree.get_device_by_name(name, incomplete=flags.allow_imperfect_devices)
+ 
+         if device is None:
+@@ -74,8 +74,8 @@ class MDDevicePopulator(DevicePopulator):
+             device.name = name
+ 
+         if device is None:
+-            # if we get here, we found all of the parent devices and
+-            # something must be wrong -- if all of the parents are in
++            # if we get here, we found all of the slave devices and
++            # something must be wrong -- if all of the slaves are in
+             # the tree, this device should be as well
+             if name is None:
+                 name = udev.device_get_name(self.data)
+diff --git a/blivet/populator/helpers/multipath.py b/blivet/populator/helpers/multipath.py
+index 96c0a9ad..10c745bf 100644
+--- a/blivet/populator/helpers/multipath.py
++++ b/blivet/populator/helpers/multipath.py
+@@ -40,13 +40,13 @@ class MultipathDevicePopulator(DevicePopulator):
+         name = udev.device_get_name(self.data)
+         log_method_call(self, name=name)
+ 
+-        parent_devices = self._devicetree._add_parent_devices(self.data)
++        slave_devices = self._devicetree._add_slave_devices(self.data)
+ 
+         device = None
+-        if parent_devices:
+-            device = MultipathDevice(name, parents=parent_devices,
++        if slave_devices:
++            device = MultipathDevice(name, parents=slave_devices,
+                                      sysfs_path=udev.device_get_sysfs_path(self.data),
+-                                     wwn=parent_devices[0].wwn)
++                                     wwn=slave_devices[0].wwn)
+             self._devicetree._add_device(device)
+ 
+         return device
+diff --git a/blivet/populator/populator.py b/blivet/populator/populator.py
+index 3a419418..068270b2 100644
+--- a/blivet/populator/populator.py
++++ b/blivet/populator/populator.py
+@@ -31,7 +31,7 @@ gi.require_version("BlockDev", "2.0")
+ 
+ from gi.repository import BlockDev as blockdev
+ 
+-from ..errors import DeviceError, DeviceTreeError, NoParentsError
++from ..errors import DeviceError, DeviceTreeError, NoSlavesError
+ from ..devices import DMLinearDevice, DMRaidArrayDevice
+ from ..devices import FileDevice, LoopDevice
+ from ..devices import MDRaidArrayDevice
+@@ -92,55 +92,56 @@ class PopulatorMixin(object):
+ 
+         self._cleanup = False
+ 
+-    def _add_parent_devices(self, info):
+-        """ Add all parents of a device, raising DeviceTreeError on failure.
++    def _add_slave_devices(self, info):
++        """ Add all slaves of a device, raising DeviceTreeError on failure.
+ 
+             :param :class:`pyudev.Device` info: the device's udev info
+-            :raises: :class:`~.errors.DeviceTreeError if no parents are found or
+-                     if we fail to add any parent
+-            :returns: a list of parent devices
++            :raises: :class:`~.errors.DeviceTreeError if no slaves are found or
++                     if we fail to add any slave
++            :returns: a list of slave devices
+             :rtype: list of :class:`~.StorageDevice`
+         """
+         name = udev.device_get_name(info)
+         sysfs_path = udev.device_get_sysfs_path(info)
+-        parent_dir = os.path.normpath("%s/slaves" % sysfs_path)
+-        parent_names = os.listdir(parent_dir)
+-        parent_devices = []
+-        if not parent_names:
+-            log.error("no parents found for %s", name)
+-            raise NoParentsError("no parents found for device %s" % name)
+-
+-        for parent_name in parent_names:
+-            path = os.path.normpath("%s/%s" % (parent_dir, parent_name))
+-            parent_info = udev.get_device(os.path.realpath(path))
+-
+-            if not parent_info:
+-                msg = "unable to get udev info for %s" % parent_name
++        slave_dir = os.path.normpath("%s/slaves" % sysfs_path)
++        slave_names = os.listdir(slave_dir)
++        slave_devices = []
++        if not slave_names:
++            log.error("no slaves found for %s", name)
++            raise NoSlavesError("no slaves found for device %s" % name)
++
++        for slave_name in slave_names:
++            path = os.path.normpath("%s/%s" % (slave_dir, slave_name))
++            slave_info = udev.get_device(os.path.realpath(path))
++
++            if not slave_info:
++                msg = "unable to get udev info for %s" % slave_name
+                 raise DeviceTreeError(msg)
+ 
+             # cciss in sysfs is "cciss!cXdYpZ" but we need "cciss/cXdYpZ"
+-            parent_name = udev.device_get_name(parent_info).replace("!", "/")
+-
+-            parent_dev = self.get_device_by_name(parent_name)
+-            if not parent_dev and parent_info:
+-                # we haven't scanned the parent yet, so do it now
+-                self.handle_device(parent_info)
+-                parent_dev = self.get_device_by_name(parent_name)
+-                if parent_dev is None:
++            slave_name = udev.device_get_name(slave_info).replace("!", "/")
++
++            slave_dev = self.get_device_by_name(slave_name)
++            if not slave_dev and slave_info:
++                # we haven't scanned the slave yet, so do it now
++                self.handle_device(slave_info)
++                slave_dev = self.get_device_by_name(slave_name)
++                if slave_dev is None:
+                     if udev.device_is_dm_lvm(info):
+-                        if parent_name not in lvs_info.cache:
++                        if slave_name not in lvs_info.cache:
+                             # we do not expect hidden lvs to be in the tree
+                             continue
+ 
+-                    # if the current parent is still not in
++                    # if the current slave is still not in
+                     # the tree, something has gone wrong
+-                    log.error("failure scanning device %s: could not add parent %s", name, parent_name)
+-                    msg = "failed to add parent %s of device %s" % (parent_name, name)
++                    log.error("failure scanning device %s: could not add slave %s", name, slave_name)
++                    msg = "failed to add slave %s of device %s" % (slave_name,
++                                                                   name)
+                     raise DeviceTreeError(msg)
+ 
+-            parent_devices.append(parent_dev)
++            slave_devices.append(slave_dev)
+ 
+-        return parent_devices
++        return slave_devices
+ 
+     def _add_name(self, name):
+         if name not in self.names:
+diff --git a/blivet/threads.py b/blivet/threads.py
+index 5e2dff3f..1a5cc6db 100644
+--- a/blivet/threads.py
++++ b/blivet/threads.py
+@@ -63,11 +63,12 @@ class SynchronizedMeta(type):
+     """
+     def __new__(cls, name, bases, dct):
+         new_dct = {}
++        blacklist = dct.get('_unsynchronized_methods', [])
+ 
+         for n in dct:
+             obj = dct[n]
+             # Do not decorate class or static methods.
+-            if n in dct.get('_unsynchronized_methods', []):
++            if n in blacklist:
+                 pass
+             elif isinstance(obj, FunctionType):
+                 obj = exclusive(obj)
+diff --git a/blivet/udev.py b/blivet/udev.py
+index efbc53d6..ddc49a37 100644
+--- a/blivet/udev.py
++++ b/blivet/udev.py
+@@ -39,7 +39,7 @@ from gi.repository import BlockDev as blockdev
+ global_udev = pyudev.Context()
+ log = logging.getLogger("blivet")
+ 
+-ignored_device_names = []
++device_name_blacklist = []
+ """ device name regexes to ignore; this should be empty by default """
+ 
+ 
+@@ -77,7 +77,7 @@ def get_devices(subsystem="block"):
+ 
+     result = []
+     for device in global_udev.list_devices(subsystem=subsystem):
+-        if not __is_ignored_blockdev(device.sys_name):
++        if not __is_blacklisted_blockdev(device.sys_name):
+             dev = device_to_dict(device)
+             result.append(dev)
+ 
+@@ -176,13 +176,13 @@ def resolve_glob(glob):
+     return ret
+ 
+ 
+-def __is_ignored_blockdev(dev_name):
++def __is_blacklisted_blockdev(dev_name):
+     """Is this a blockdev we never want for an install?"""
+     if dev_name.startswith("ram") or dev_name.startswith("fd"):
+         return True
+ 
+-    if ignored_device_names:
+-        if any(re.search(expr, dev_name) for expr in ignored_device_names):
++    if device_name_blacklist:
++        if any(re.search(expr, dev_name) for expr in device_name_blacklist):
+             return True
+ 
+     dev_path = "/sys/class/block/%s" % dev_name
+@@ -375,7 +375,7 @@ def device_is_disk(info):
+                  device_is_dm_crypt(info) or
+                  device_is_dm_stratis(info) or
+                  (device_is_md(info) and
+-                  (not device_get_md_container(info) and not all(device_is_disk(d) for d in device_get_parents(info))))))
++                  (not device_get_md_container(info) and not all(device_is_disk(d) for d in device_get_slaves(info))))))
+ 
+ 
+ def device_is_partition(info):
+@@ -454,18 +454,18 @@ def device_get_devname(info):
+     return info.get('DEVNAME')
+ 
+ 
+-def device_get_parents(info):
+-    """ Return a list of udev device objects representing this device's parents. """
+-    parents_dir = device_get_sysfs_path(info) + "/slaves/"
++def device_get_slaves(info):
++    """ Return a list of udev device objects representing this device's slaves. """
++    slaves_dir = device_get_sysfs_path(info) + "/slaves/"
+     names = list()
+-    if os.path.isdir(parents_dir):
+-        names = os.listdir(parents_dir)
++    if os.path.isdir(slaves_dir):
++        names = os.listdir(slaves_dir)
+ 
+-    parents = list()
++    slaves = list()
+     for name in names:
+-        parents.append(get_device(device_node="/dev/" + name))
++        slaves.append(get_device(device_node="/dev/" + name))
+ 
+-    return parents
++    return slaves
+ 
+ 
+ def device_get_holders(info):
+@@ -742,7 +742,7 @@ def device_get_partition_disk(info):
+     disk = None
+     majorminor = info.get("ID_PART_ENTRY_DISK")
+     sysfs_path = device_get_sysfs_path(info)
+-    parents_dir = "%s/slaves" % sysfs_path
++    slaves_dir = "%s/slaves" % sysfs_path
+     if majorminor:
+         major, minor = majorminor.split(":")
+         for device in get_devices():
+@@ -750,8 +750,8 @@ def device_get_partition_disk(info):
+                 disk = device_get_name(device)
+                 break
+     elif device_is_dm_partition(info):
+-        if os.path.isdir(parents_dir):
+-            parents = os.listdir(parents_dir)
++        if os.path.isdir(slaves_dir):
++            parents = os.listdir(slaves_dir)
+             if len(parents) == 1:
+                 disk = resolve_devspec(parents[0].replace('!', '/'))
+     else:
+diff --git a/tests/unit_tests/devicefactory_test.py b/tests/unit_tests/devicefactory_test.py
+index ff6bcb9e..552aadc1 100644
+--- a/tests/unit_tests/devicefactory_test.py
++++ b/tests/unit_tests/devicefactory_test.py
+@@ -115,9 +115,9 @@ class DeviceFactoryTestCase(unittest.TestCase):
+                          kwargs.get("encrypted", False) or
+                          kwargs.get("container_encrypted", False))
+         if kwargs.get("encrypted", False):
+-            self.assertEqual(device.parents[0].format.luks_version,
++            self.assertEqual(device.slave.format.luks_version,
+                              kwargs.get("luks_version", crypto.DEFAULT_LUKS_VERSION))
+-            self.assertEqual(device.raw_device.format.luks_sector_size,
++            self.assertEqual(device.slave.format.luks_sector_size,
+                              kwargs.get("luks_sector_size", 0))
+ 
+         self.assertTrue(set(device.disks).issubset(kwargs["disks"]))
+@@ -357,7 +357,7 @@ class LVMFactoryTestCase(DeviceFactoryTestCase):
+         device = args[0]
+ 
+         if kwargs.get("encrypted"):
+-            container = device.parents[0].container
++            container = device.slave.container
+         else:
+             container = device.container
+ 
+@@ -376,7 +376,7 @@ class LVMFactoryTestCase(DeviceFactoryTestCase):
+             self.assertIsInstance(pv, member_class)
+ 
+             if pv.encrypted:
+-                self.assertEqual(pv.parents[0].format.luks_version,
++                self.assertEqual(pv.slave.format.luks_version,
+                                  kwargs.get("luks_version", crypto.DEFAULT_LUKS_VERSION))
+ 
+     @patch("blivet.formats.lvmpv.LVMPhysicalVolume.formattable", return_value=True)
+@@ -592,7 +592,7 @@ class LVMThinPFactoryTestCase(LVMFactoryTestCase):
+         device = args[0]
+ 
+         if kwargs.get("encrypted", False):
+-            thinlv = device.parents[0]
++            thinlv = device.slave
+         else:
+             thinlv = device
+ 
+diff --git a/tests/unit_tests/devices_test/device_size_test.py b/tests/unit_tests/devices_test/device_size_test.py
+index d0c0a3f4..a1efa86d 100644
+--- a/tests/unit_tests/devices_test/device_size_test.py
++++ b/tests/unit_tests/devices_test/device_size_test.py
+@@ -107,8 +107,8 @@ class LUKSDeviceSizeTest(StorageDeviceSizeTest):
+ 
+     def _get_device(self, *args, **kwargs):
+         exists = kwargs.get("exists", False)
+-        parent = StorageDevice(*args, size=kwargs["size"] + crypto.LUKS_METADATA_SIZE, exists=exists)
+-        return LUKSDevice(*args, **kwargs, parents=[parent])
++        slave = StorageDevice(*args, size=kwargs["size"] + crypto.LUKS_METADATA_SIZE, exists=exists)
++        return LUKSDevice(*args, **kwargs, parents=[slave])
+ 
+     def test_size_getter(self):
+         initial_size = Size("10 GiB")
+@@ -116,4 +116,4 @@ class LUKSDeviceSizeTest(StorageDeviceSizeTest):
+ 
+         # for LUKS size depends on the backing device size
+         self.assertEqual(dev.size, initial_size)
+-        self.assertEqual(dev.raw_device.size, initial_size + crypto.LUKS_METADATA_SIZE)
++        self.assertEqual(dev.slave.size, initial_size + crypto.LUKS_METADATA_SIZE)
+diff --git a/tests/unit_tests/populator_test.py b/tests/unit_tests/populator_test.py
+index 369fe878..7ba04bac 100644
+--- a/tests/unit_tests/populator_test.py
++++ b/tests/unit_tests/populator_test.py
+@@ -86,7 +86,7 @@ class DMDevicePopulatorTestCase(PopulatorHelperTestCase):
+     @patch.object(DeviceTree, "get_device_by_name")
+     @patch.object(DMDevice, "status", return_value=True)
+     @patch.object(DMDevice, "update_sysfs_path")
+-    @patch.object(DeviceTree, "_add_parent_devices")
++    @patch.object(DeviceTree, "_add_slave_devices")
+     @patch("blivet.udev.device_get_name")
+     @patch("blivet.udev.device_get_sysfs_path", return_value=sentinel.sysfs_path)
+     def test_run(self, *args):
+@@ -95,7 +95,7 @@ class DMDevicePopulatorTestCase(PopulatorHelperTestCase):
+ 
+         devicetree = DeviceTree()
+ 
+-        # The general case for dm devices is that adding the parent devices
++        # The general case for dm devices is that adding the slave/parent devices
+         # will result in the dm device itself being in the tree.
+         device = Mock()
+         device.id = 0
+@@ -106,7 +106,7 @@ class DMDevicePopulatorTestCase(PopulatorHelperTestCase):
+         parent = Mock()
+         parent.id = 0
+         parent.parents = []
+-        devicetree._add_parent_devices.return_value = [parent]
++        devicetree._add_slave_devices.return_value = [parent]
+         devicetree._add_device(parent)
+         devicetree.get_device_by_name.return_value = None
+         device_name = "dmdevice"
+@@ -235,7 +235,7 @@ class LVMDevicePopulatorTestCase(PopulatorHelperTestCase):
+         # could be the first helper class checked.
+ 
+     @patch.object(DeviceTree, "get_device_by_name")
+-    @patch.object(DeviceTree, "_add_parent_devices")
++    @patch.object(DeviceTree, "_add_slave_devices")
+     @patch("blivet.udev.device_get_name")
+     @patch("blivet.udev.device_get_lv_vg_name")
+     def test_run(self, *args):
+@@ -247,7 +247,7 @@ class LVMDevicePopulatorTestCase(PopulatorHelperTestCase):
+         devicetree = DeviceTree()
+         data = Mock()
+ 
+-        # Add parent devices and then look up the device.
++        # Add slave/parent devices and then look up the device.
+         device_get_name.return_value = sentinel.lv_name
+         devicetree.get_device_by_name.return_value = None
+ 
+@@ -267,7 +267,7 @@ class LVMDevicePopulatorTestCase(PopulatorHelperTestCase):
+              call(sentinel.vg_name),
+              call(sentinel.lv_name)])
+ 
+-        # Add parent devices, but the device is still not in the tree
++        # Add slave/parent devices, but the device is still not in the tree
+         get_device_by_name.side_effect = None
+         get_device_by_name.return_value = None
+         self.assertEqual(helper.run(), None)
+@@ -639,7 +639,7 @@ class MDDevicePopulatorTestCase(PopulatorHelperTestCase):
+         # could be the first helper class checked.
+ 
+     @patch.object(DeviceTree, "get_device_by_name")
+-    @patch.object(DeviceTree, "_add_parent_devices")
++    @patch.object(DeviceTree, "_add_slave_devices")
+     @patch("blivet.udev.device_get_name")
+     @patch("blivet.udev.device_get_md_uuid")
+     @patch("blivet.udev.device_get_md_name")
+@@ -650,7 +650,7 @@ class MDDevicePopulatorTestCase(PopulatorHelperTestCase):
+ 
+         devicetree = DeviceTree()
+ 
+-        # base case: _add_parent_devices gets the array into the tree
++        # base case: _add_slave_devices gets the array into the tree
+         data = Mock()
+         device = Mock()
+         device.parents = []
+@@ -713,12 +713,12 @@ class MultipathDevicePopulatorTestCase(PopulatorHelperTestCase):
+         # could be the first helper class checked.
+ 
+     @patch("blivet.udev.device_get_sysfs_path")
+-    @patch.object(DeviceTree, "_add_parent_devices")
++    @patch.object(DeviceTree, "_add_slave_devices")
+     @patch("blivet.udev.device_get_name")
+     def test_run(self, *args):
+         """Test multipath device populator."""
+         device_get_name = args[0]
+-        add_parent_devices = args[1]
++        add_slave_devices = args[1]
+ 
+         devicetree = DeviceTree()
+         # set up some fake udev data to verify handling of specific entries
+@@ -733,13 +733,13 @@ class MultipathDevicePopulatorTestCase(PopulatorHelperTestCase):
+ 
+         device_name = "mpathtest"
+         device_get_name.return_value = device_name
+-        parent_1 = Mock(tags=set(), wwn=wwn[2:], id=0)
+-        parent_1.parents = []
+-        parent_2 = Mock(tags=set(), wwn=wwn[2:], id=0)
+-        parent_2.parents = []
+-        devicetree._add_device(parent_1)
+-        devicetree._add_device(parent_2)
+-        add_parent_devices.return_value = [parent_1, parent_2]
++        slave_1 = Mock(tags=set(), wwn=wwn[2:], id=0)
++        slave_1.parents = []
++        slave_2 = Mock(tags=set(), wwn=wwn[2:], id=0)
++        slave_2.parents = []
++        devicetree._add_device(slave_1)
++        devicetree._add_device(slave_2)
++        add_slave_devices.return_value = [slave_1, slave_2]
+ 
+         helper = self.helper_class(devicetree, data)
+ 
+diff --git a/tests/unit_tests/udev_test.py b/tests/unit_tests/udev_test.py
+index b208efa8..ebcd59e2 100644
+--- a/tests/unit_tests/udev_test.py
++++ b/tests/unit_tests/udev_test.py
+@@ -49,11 +49,11 @@ class UdevTest(unittest.TestCase):
+     @mock.patch('blivet.udev.device_is_dm_crypt', return_value=False)
+     @mock.patch('blivet.udev.device_is_md')
+     @mock.patch('blivet.udev.device_get_md_container')
+-    @mock.patch('blivet.udev.device_get_parents')
++    @mock.patch('blivet.udev.device_get_slaves')
+     def test_udev_device_is_disk_md(self, *args):
+         import blivet.udev
+         info = dict(DEVTYPE='disk', SYS_PATH=mock.sentinel.md_path)
+-        (device_get_parents, device_get_md_container, device_is_md) = args[:3]  # pylint: disable=unbalanced-tuple-unpacking
++        (device_get_slaves, device_get_md_container, device_is_md) = args[:3]  # pylint: disable=unbalanced-tuple-unpacking
+ 
+         disk_parents = [dict(DEVTYPE="disk", SYS_PATH='/fake/path/2'),
+                         dict(DEVTYPE="disk", SYS_PATH='/fake/path/3')]
+@@ -68,20 +68,20 @@ class UdevTest(unittest.TestCase):
+         # Intel FW RAID (MD RAID w/ container layer)
+         # device_get_container will return some mock value which will evaluate to True
+         device_get_md_container.return_value = mock.sentinel.md_container
+-        device_get_parents.side_effect = lambda info: list()
++        device_get_slaves.side_effect = lambda info: list()
+         self.assertTrue(blivet.udev.device_is_disk(info))
+ 
+         # Normal MD RAID
+-        device_get_parents.side_effect = lambda info: partition_parents if info['SYS_PATH'] == mock.sentinel.md_path else list()
++        device_get_slaves.side_effect = lambda info: partition_parents if info['SYS_PATH'] == mock.sentinel.md_path else list()
+         device_get_md_container.return_value = None
+         self.assertFalse(blivet.udev.device_is_disk(info))
+ 
+         # Dell FW RAID (MD RAID whose members are all whole disks)
+-        device_get_parents.side_effect = lambda info: disk_parents if info['SYS_PATH'] == mock.sentinel.md_path else list()
++        device_get_slaves.side_effect = lambda info: disk_parents if info['SYS_PATH'] == mock.sentinel.md_path else list()
+         self.assertTrue(blivet.udev.device_is_disk(info))
+ 
+         # Normal MD RAID (w/ at least one non-disk member)
+-        device_get_parents.side_effect = lambda info: mixed_parents if info['SYS_PATH'] == mock.sentinel.md_path else list()
++        device_get_slaves.side_effect = lambda info: mixed_parents if info['SYS_PATH'] == mock.sentinel.md_path else list()
+         self.assertFalse(blivet.udev.device_is_disk(info))
+ 
+ 
+diff --git a/tests/vmtests/vmbackedtestcase.py b/tests/vmtests/vmbackedtestcase.py
+index 797bac85..6255104f 100644
+--- a/tests/vmtests/vmbackedtestcase.py
++++ b/tests/vmtests/vmbackedtestcase.py
+@@ -50,7 +50,7 @@ class VMBackedTestCase(unittest.TestCase):
+             defined in set_up_disks.
+         """
+ 
+-        udev.ignored_device_names = [r'^zram']
++        udev.device_name_blacklist = [r'^zram']
+ 
+         #
+         # create disk images
+-- 
+2.38.1
+
