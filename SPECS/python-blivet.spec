@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 4%{?prerelease}%{?dist}
+Release: 7%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -41,6 +41,11 @@ Patch7: 0008-tests-Skip-XFS-resize-test-on-CentOS-RHEL-8.patch
 Patch8: 0009-Revert-Adjust-to-new-XFS-min-size.patch
 Patch9: 0010-Catch-BlockDevNotImplementedError-for-btrfs-plugin-c.patch
 Patch10: 0011-Default-to-encryption-sector-size-512-for-LUKS-devic.patch
+Patch11: 0012-Add-support-for-specifying-stripe-size-for-RAID-LVs.patch
+Patch12: 0013-Fix-setting-kickstart-data.patch
+Patch13: 0014-Do-not-set-memory-limit-for-LUKS2-when-running-in-FI.patch
+Patch14: 0015-Add-support-for-filesystem-online-resize.patch
+Patch15: 0016-Backport-iSCSI-initiator-name-related-fixes.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -203,6 +208,31 @@ configuration.
 %endif
 
 %changelog
+* Mon Jul 24 2023 Jan Pokorny <japokorn@redhat.com> - 3.6.0-7
+Backport iSCSI initiator name related fixes:
+- Allow changing iSCSI initiator name after setting it
+  Resolves: rhbz#2083139
+- Add a basic test case for the iscsi module
+  Related: rhbz#2083139
+- tests: Use blivet-specific prefix for targetcli backing files
+  Related: rhbz#2083139
+- iscsi: Save firmware initiator name to /etc/iscsi/initiatorname.iscsi
+  Resolves: rhbz#2084043
+- tests: Improve iscsi_test.ISCSITestCase
+  Related: rhbz#2083139
+
+* Thu May 18 2023 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-6
+- Fix setting kickstart data
+  Resolves: rhbz#2175166
+- Do not set memory limit for LUKS2 when running in FIPS mode
+  Resolves: rhbz#2183437
+- Add support for filesystem online resize
+  Resolves: rhbz#2168680
+
+* Tue May 02 2023 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-5
+- Add support for specifying stripe size for RAID LVs
+  Resolves: rhbz#2142550
+
 * Thu Jan 19 2023 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-4
 - Default to encryption sector size 512 for LUKS devices
   Resolves: rhbz#2160465
