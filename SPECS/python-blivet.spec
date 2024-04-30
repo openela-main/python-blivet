@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 9%{?prerelease}%{?dist}
+Release: 14%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -46,6 +46,13 @@ Patch12: 0013-Fix-setting-kickstart-data.patch
 Patch13: 0014-Do-not-set-memory-limit-for-LUKS2-when-running-in-FI.patch
 Patch14: 0015-Add-support-for-filesystem-online-resize.patch
 Patch15: 0016-Backport-iSCSI-initiator-name-related-fixes.patch
+Patch16: 0017-nvme-additional-rpms-for-dracut.patch
+Patch17: 0018-nvme-TP4126-fixes-1.patch
+Patch18: 0019-nvme-hostnqn_from_active_fabrics_connection.patch
+Patch19: 0020-nvme-add_unit_tests.patch
+Patch20: 0021-Add-support-for-creating-shared-LVM-setups.patch
+Patch21: 0022-add-udev-builtin-path_id-property-to-zfcp-attached-S.patch
+Patch22: 0023-Do-not-add-new-PVs-to-the-LVM-devices-file-if-it-doe.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -209,6 +216,28 @@ configuration.
 %endif
 
 %changelog
+* Fri Feb 09 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-14
+- Do not add new PVs to the LVM devices file if it doesn't exist and VGs are present
+  Resolves: RHEL-473
+
+* Thu Jan 18 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-13
+- add udev-builtin-path_id property to zfcp-attached SCSI disks
+  Resolves: RHEL-22007
+
+* Wed Dec 13 2023 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-12
+- Add support for creating shared LVM setups
+  Resolves: RHEL-324
+
+* Mon Dec 11 2023 Tomas Bzatek <tbzatek@redhat.com> - 3.6.0-11
+- nvme: Retrieve HostNQN from a first active fabrics connection
+- tests: Add a simple unit test for the NVMe module
+  Resolves: RHEL-11541
+
+* Tue Sep 26 2023 Tomas Bzatek <tbzatek@redhat.com> - 3.6.0-10
+- nvme: Require additional rpms for dracut
+  Resolves: RHEL-2855
+- nvme: Align HostNQN and HostID format to TP-4126
+  Resolves: RHEL-1254
 
 * Mon Jul 24 2023 Jan Pokorny <japokorn@redhat.com> - 3.6.0-9
   Backport iSCSI initiator name related fixes:
