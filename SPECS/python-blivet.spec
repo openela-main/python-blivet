@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 7%{?prerelease}%{?dist}
+Release: 8%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -46,6 +46,7 @@ Patch12: 0013-Fix-setting-kickstart-data.patch
 Patch13: 0014-Do-not-set-memory-limit-for-LUKS2-when-running-in-FI.patch
 Patch14: 0015-Add-support-for-filesystem-online-resize.patch
 Patch15: 0016-Backport-iSCSI-initiator-name-related-fixes.patch
+Patch16: 0017-Add-support-for-creating-shared-LVM-setups.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -208,6 +209,10 @@ configuration.
 %endif
 
 %changelog
+* Mon Oct 30 2023 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-8
+- Add support for creating shared LVM setups
+  Resolves: RHEL-14021
+
 * Mon Jul 24 2023 Jan Pokorny <japokorn@redhat.com> - 3.6.0-7
 Backport iSCSI initiator name related fixes:
 - Allow changing iSCSI initiator name after setting it
