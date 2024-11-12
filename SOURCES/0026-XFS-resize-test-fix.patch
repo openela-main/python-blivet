@@ -1,0 +1,76 @@
+From c2e247fe953568a65c73f5408a6da7af12c4d6a1 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 18 Jun 2024 14:47:39 +0200
+Subject: [PATCH 1/2] tests: Try waiting after partition creation for XFS
+ resize test
+
+The test randomly fails to find the newly created partition so
+lets try waiting a bit with udev settle.
+---
+ tests/skip.yml                              | 6 ------
+ tests/storage_tests/formats_test/fs_test.py | 2 ++
+ 2 files changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/tests/skip.yml b/tests/skip.yml
+index c0ca0eaf..8d353b1b 100644
+--- a/tests/skip.yml
++++ b/tests/skip.yml
+@@ -23,9 +23,3 @@
+ # - all "skips" can specified as a list, for example 'version: [10, 11]'
+ 
+ ---
+-
+-- test: storage_tests.formats_test.fs_test.XFSTestCase.test_resize
+-  skip_on:
+-    - distro: ["centos", "enterprise_linux"]
+-      version: "9"
+-      reason: "Creating partitions on loop devices is broken on CentOS/RHEL 9 latest kernel"
+diff --git a/tests/storage_tests/formats_test/fs_test.py b/tests/storage_tests/formats_test/fs_test.py
+index 1d42dc21..59c0f998 100644
+--- a/tests/storage_tests/formats_test/fs_test.py
++++ b/tests/storage_tests/formats_test/fs_test.py
+@@ -10,6 +10,7 @@ from blivet.errors import DeviceFormatError, FSError
+ from blivet.formats import get_format
+ from blivet.devices import PartitionDevice, DiskDevice
+ from blivet.flags import flags
++from blivet import udev
+ 
+ from .loopbackedtestcase import LoopBackedTestCase
+ 
+@@ -107,6 +108,7 @@ class XFSTestCase(fstesting.FSAsRoot):
+         pend = pstart + int(Size(size) / disk.format.parted_device.sectorSize)
+         disk.format.add_partition(pstart, pend, parted.PARTITION_NORMAL)
+         disk.format.parted_disk.commit()
++        udev.settle()
+         part = disk.format.parted_disk.getPartitionBySector(pstart)
+ 
+         device = PartitionDevice(os.path.basename(part.path))
+-- 
+2.45.2
+
+
+From 511d64c69618de0e7bb567353e5e0c92b61da10e Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Thu, 7 Mar 2024 09:45:28 +0100
+Subject: [PATCH 2/2] Fix util.detect_virt on Amazon
+
+---
+ blivet/util.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/blivet/util.py b/blivet/util.py
+index 3040ee5a..15d41b4f 100644
+--- a/blivet/util.py
++++ b/blivet/util.py
+@@ -1137,7 +1137,7 @@ def detect_virt():
+     except (safe_dbus.DBusCallError, safe_dbus.DBusPropertyError):
+         return False
+     else:
+-        return vm[0] in ('qemu', 'kvm', 'xen')
++        return vm[0] in ('qemu', 'kvm', 'xen', 'microsoft', 'amazon')
+ 
+ 
+ def natural_sort_key(device):
+-- 
+2.45.2
+

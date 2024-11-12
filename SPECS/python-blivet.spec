@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 14%{?prerelease}%{?dist}
+Release: 17%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -53,6 +53,9 @@ Patch19: 0020-nvme-add_unit_tests.patch
 Patch20: 0021-Add-support-for-creating-shared-LVM-setups.patch
 Patch21: 0022-add-udev-builtin-path_id-property-to-zfcp-attached-S.patch
 Patch22: 0023-Do-not-add-new-PVs-to-the-LVM-devices-file-if-it-doe.patch
+Patch23: 0024-Added-support-for-PV-grow.patch
+Patch24: 0025-Stratis-fixes-backport.patch
+Patch25: 0026-XFS-resize-test-fix.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -216,6 +219,20 @@ configuration.
 %endif
 
 %changelog
+* Mon Jul 22 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-17
+- Fix 'Try waiting after partition creation for XFS resize test'
+  Resolves: RHEL-8009
+
+* Thu Jun 27 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-16
+- tests: Try waiting after partition creation for XFS resize test
+  Resolves: RHEL-8009
+
+* Thu May 16 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-15
+- Backport fixes for Stratis support needed for storage role
+  Resolves: RHEL-35382
+- Add support for resizing PVs to the size of the underlying block device
+  Resolves: RHEL-35386
+
 * Fri Feb 09 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-14
 - Do not add new PVs to the LVM devices file if it doesn't exist and VGs are present
   Resolves: RHEL-473

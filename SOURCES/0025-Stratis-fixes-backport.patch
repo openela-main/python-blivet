@@ -1,0 +1,1328 @@
+From 44cea0b768633c1a8c6f472d9bfc9a9118713e58 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 23 Jan 2023 13:47:24 +0100
+Subject: [PATCH 01/16] tests: Patch checking stratis pool metadata size
+
+In unit tests we don't want to actually use the stratis tools to
+check for metadata size, we just need to be sure our internal
+calculation works.
+---
+ tests/unit_tests/devices_test/stratis_test.py | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/tests/unit_tests/devices_test/stratis_test.py b/tests/unit_tests/devices_test/stratis_test.py
+index 1d19db7d4..2ce873843 100644
+--- a/tests/unit_tests/devices_test/stratis_test.py
++++ b/tests/unit_tests/devices_test/stratis_test.py
+@@ -35,8 +35,9 @@ def test_new_stratis(self):
+             pool = b.new_stratis_pool(name="testpool", parents=[bd])
+         self.assertEqual(pool.name, "testpool")
+         self.assertEqual(pool.size, bd.size)
+-        # for 2 GiB pool, metadata should take around 0.5 GiB
+-        self.assertAlmostEqual(pool.free_space, Size("1.5 GiB"), delta=Size("10 MiB"))
++
++        with patch("blivet.devicelibs.stratis.pool_used", lambda _d, _e: Size("512 MiB")):
++            self.assertAlmostEqual(pool.free_space, Size("1.5 GiB"))
+ 
+         with patch("blivet.devicetree.DeviceTree.names", []):
+             fs = b.new_stratis_filesystem(name="testfs", parents=[pool], size=Size("1 GiB"))
+
+From f85e35218db42e5f563387866287ea93993bf9c9 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 18 Mar 2024 14:35:04 +0100
+Subject: [PATCH 02/16] Fix creating Stratis filesystem without size specified
+
+We do allow creating Stratis FS without specifying its size which
+simply means creating the default 1 TiB filesystem.
+---
+ blivet/devices/stratis.py                     |  2 +
+ tests/unit_tests/devices_test/stratis_test.py | 51 +++++++++++++++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/blivet/devices/stratis.py b/blivet/devices/stratis.py
+index 27644e669..2b8d75f95 100644
+--- a/blivet/devices/stratis.py
++++ b/blivet/devices/stratis.py
+@@ -198,6 +198,8 @@ class StratisFilesystemDevice(StorageDevice):
+     _min_size = Size("512 MiB")
+ 
+     def __init__(self, name, parents=None, size=None, uuid=None, exists=False):
++        if size is None:
++            size = devicelibs.stratis.STRATIS_FS_SIZE
+         if not exists and parents[0].free_space <= devicelibs.stratis.filesystem_md_size(size):
+             raise StratisError("cannot create new stratis filesystem, not enough free space in the pool")
+ 
+diff --git a/tests/unit_tests/devices_test/stratis_test.py b/tests/unit_tests/devices_test/stratis_test.py
+index 2ce873843..f7fae9e08 100644
+--- a/tests/unit_tests/devices_test/stratis_test.py
++++ b/tests/unit_tests/devices_test/stratis_test.py
+@@ -104,3 +104,54 @@ def test_new_encrypted_stratis(self):
+                                                                 encrypted=True,
+                                                                 passphrase="secret",
+                                                                 key_file=None)
++
++    def test_new_stratis_no_size(self):
++        b = blivet.Blivet()
++        bd = StorageDevice("bd1", fmt=blivet.formats.get_format("stratis"),
++                           size=Size("2 GiB"), exists=False)
++
++        b.devicetree._add_device(bd)
++
++        with patch("blivet.devicetree.DeviceTree.names", []):
++            pool = b.new_stratis_pool(name="testpool", parents=[bd])
++        self.assertEqual(pool.name, "testpool")
++        self.assertEqual(pool.size, bd.size)
++
++        with patch("blivet.devicelibs.stratis.pool_used", lambda _d, _e: Size("512 MiB")):
++            self.assertAlmostEqual(pool.free_space, Size("1.5 GiB"))
++
++        with patch("blivet.devicetree.DeviceTree.names", []):
++            fs = b.new_stratis_filesystem(name="testfs", parents=[pool])
++
++        self.assertEqual(fs.name, "testpool/testfs")
++        self.assertEqual(fs.path, "/dev/stratis/%s" % fs.name)
++        self.assertEqual(fs.size, Size("1 TiB"))
++        self.assertEqual(fs.pool, pool)
++        self.assertEqual(fs.format.type, "stratis xfs")
++        # for 1 TiB filesystem, metadata should take around 1 GiB
++        self.assertAlmostEqual(fs.used_size, Size("1 GiB"), delta=Size("50 MiB"))
++
++        b.create_device(pool)
++        b.create_device(fs)
++
++        with patch("blivet.devicelibs.stratis") as stratis_dbus:
++            with patch.object(pool, "_pre_create"):
++                with patch.object(pool, "_post_create"):
++                    pool.create()
++                    stratis_dbus.create_pool.assert_called_with(name='testpool',
++                                                                devices=['/dev/bd1'],
++                                                                encrypted=False,
++                                                                passphrase=None,
++                                                                key_file=None)
++
++        # we would get this from pool._post_create
++        pool.uuid = "c4fc9ebe-e173-4cab-8d81-cc6abddbe02d"
++
++        with patch("blivet.devicelibs.stratis") as stratis_dbus:
++            with patch.object(fs, "_pre_create"):
++                with patch.object(fs, "_post_create"):
++                    fs.create()
++                    stratis_dbus.create_filesystem.assert_called_with(name="testfs",
++                                                                      pool_uuid="c4fc9ebe-e173-4cab-8d81-cc6abddbe02d",
++                                                                      fs_size=Size("1 TiB"))
++
+
+From 3f6f9b2f93a572a055cffa83c9bfbccfe163adec Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 10 Apr 2024 10:54:46 +0200
+Subject: [PATCH 03/16] Do not allow creating stratis pools with different
+ sector sizes
+
+Similarly to LVM Stratis alos doesn't allow mixing different
+sector sizes in one pool.
+---
+ blivet/devices/stratis.py                     | 20 ++++++++++++++++++-
+ blivet/errors.py                              |  4 ++++
+ tests/unit_tests/devices_test/stratis_test.py | 16 ++++++++++++---
+ 3 files changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/blivet/devices/stratis.py b/blivet/devices/stratis.py
+index 2b8d75f95..61eed991f 100644
+--- a/blivet/devices/stratis.py
++++ b/blivet/devices/stratis.py
+@@ -24,10 +24,12 @@
+ import logging
+ log = logging.getLogger("blivet")
+ 
++from collections import defaultdict
++
+ from .storage import StorageDevice
+ from ..static_data import stratis_info
+ from ..storage_log import log_method_call
+-from ..errors import DeviceError, StratisError
++from ..errors import DeviceError, StratisError, InconsistentParentSectorSize
+ from ..size import Size
+ from ..tasks import availability
+ from .. import devicelibs
+@@ -161,6 +163,22 @@ def _post_create(self):
+             parent.format.pool_name = self.name
+             parent.format.pool_uuid = self.uuid
+ 
++    def _add_parent(self, parent):
++        super(StratisPoolDevice, self)._add_parent(parent)
++
++        # we are creating new pool
++        if not self.exists:
++            sector_sizes = defaultdict(list)
++            for ss, name in [(p.sector_size, p.name) for p in self.blockdevs + [parent]]:  # pylint: disable=no-member
++                sector_sizes[ss].append(name)
++            if len(sector_sizes.keys()) != 1:
++                msg = "Cannot create pool '%s'. "\
++                      "The following disks have inconsistent sector size:\n" % self.name
++                for sector_size in sector_sizes.keys():
++                    msg += "%s: %d\n" % (", ".join(sector_sizes[sector_size]), sector_size)
++
++                raise InconsistentParentSectorSize(msg)
++
+     def _destroy(self):
+         """ Destroy the device. """
+         log_method_call(self, self.name, status=self.status)
+diff --git a/blivet/errors.py b/blivet/errors.py
+index b886ffec5..ec7d06efb 100644
+--- a/blivet/errors.py
++++ b/blivet/errors.py
+@@ -67,6 +67,10 @@ class DeviceUserDeniedFormatError(DeviceError):
+ class InconsistentPVSectorSize(DeviceError, ValueError):
+     pass
+ 
++
++class InconsistentParentSectorSize(DeviceError, ValueError):
++    pass
++
+ # DeviceFormat
+ 
+ 
+diff --git a/tests/unit_tests/devices_test/stratis_test.py b/tests/unit_tests/devices_test/stratis_test.py
+index f7fae9e08..cbdd225ed 100644
+--- a/tests/unit_tests/devices_test/stratis_test.py
++++ b/tests/unit_tests/devices_test/stratis_test.py
+@@ -2,16 +2,16 @@
+ import unittest
+ 
+ try:
+-    from unittest.mock import patch
++    from unittest.mock import patch, PropertyMock
+ except ImportError:
+-    from mock import patch
++    from mock import patch, PropertyMock
+ 
+ import blivet
+ 
+ from blivet.devices import StorageDevice
+ from blivet.devices import StratisPoolDevice
+ from blivet.devices import StratisFilesystemDevice
+-from blivet.errors import StratisError
++from blivet.errors import StratisError, InconsistentParentSectorSize
+ from blivet.size import Size
+ 
+ 
+@@ -155,3 +155,13 @@ def test_new_stratis_no_size(self):
+                                                                       pool_uuid="c4fc9ebe-e173-4cab-8d81-cc6abddbe02d",
+                                                                       fs_size=Size("1 TiB"))
+ 
++    def test_pool_inconsistent_sector_size(self):
++        bd = StorageDevice("bd1", fmt=blivet.formats.get_format("stratis"),
++                           size=Size("2 GiB"), exists=False)
++        bd2 = StorageDevice("bd2", fmt=blivet.formats.get_format("stratis"),
++                            size=Size("2 GiB"), exists=False)
++
++        with patch("blivet.devices.StorageDevice.sector_size", new_callable=PropertyMock) as mock_property:
++            mock_property.__get__ = lambda _mock, bd, _class: 512 if bd.name == "bd1" else 4096
++            with self.assertRaisesRegex(InconsistentParentSectorSize, "Cannot create pool"):
++                StratisPoolDevice("testpool", parents=[bd, bd2])
+
+From 6f9df7756ca081e59d8c5b0201c11600782bb2fa Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 12 Apr 2024 15:53:15 +0200
+Subject: [PATCH 04/16] Add support for adding new members to existing Stratis
+ pool
+
+Currently only new devices can be added to a pool, removing devices
+is not supported by Stratis.
+---
+ blivet/devicelibs/stratis.py                  | 25 +++++++++++
+ blivet/devices/stratis.py                     |  9 ++++
+ .../devices_test/stratis_test.py              | 43 +++++++++++++++++++
+ 3 files changed, 77 insertions(+)
+
+diff --git a/blivet/devicelibs/stratis.py b/blivet/devicelibs/stratis.py
+index e813924e9..1f7432344 100644
+--- a/blivet/devicelibs/stratis.py
++++ b/blivet/devicelibs/stratis.py
+@@ -255,3 +255,28 @@ def create_filesystem(name, pool_uuid, fs_size=None):
+ 
+     # repopulate the stratis info cache so the new filesystem will be added
+     stratis_info.drop_cache()
++
++
++def add_device(pool_uuid, device):
++    if not availability.STRATIS_DBUS.available:
++        raise StratisError("Stratis DBus service not available")
++
++    # repopulate the stratis info cache just to be sure all values are still valid
++    stratis_info.drop_cache()
++
++    pool_info = stratis_info.pools[pool_uuid]
++
++    try:
++        ((succ, _paths), rc, err) = safe_dbus.call_sync(STRATIS_SERVICE,
++                                                        pool_info.object_path,
++                                                        STRATIS_POOL_INTF,
++                                                        "AddDataDevs",
++                                                        GLib.Variant("(as)", ([device],)))
++    except safe_dbus.DBusCallError as e:
++        raise StratisError("Failed to create stratis filesystem on '%s': %s" % (pool_info.name, str(e)))
++    else:
++        if not succ:
++            raise StratisError("Failed to create stratis filesystem on '%s': %s (%d)" % (pool_info.name, err, rc))
++
++    # repopulate the stratis info cache so the new filesystem will be added
++    stratis_info.drop_cache()
+diff --git a/blivet/devices/stratis.py b/blivet/devices/stratis.py
+index 61eed991f..317b80b36 100644
+--- a/blivet/devices/stratis.py
++++ b/blivet/devices/stratis.py
+@@ -179,6 +179,15 @@ def _add_parent(self, parent):
+ 
+                 raise InconsistentParentSectorSize(msg)
+ 
++        parent.format.pool_name = self.name
++        parent.format.pool_uuid = self.uuid
++
++    def _add(self, member):
++        devicelibs.stratis.add_device(self.uuid, member.path)
++
++    def _remove(self, member):
++        raise DeviceError("Removing members from a Stratis pool is not supported")
++
+     def _destroy(self):
+         """ Destroy the device. """
+         log_method_call(self, self.name, status=self.status)
+diff --git a/tests/storage_tests/devices_test/stratis_test.py b/tests/storage_tests/devices_test/stratis_test.py
+index 3aba7685f..cfb645ef5 100644
+--- a/tests/storage_tests/devices_test/stratis_test.py
++++ b/tests/storage_tests/devices_test/stratis_test.py
+@@ -162,3 +162,46 @@ def test_stratis_overprovision(self):
+         self.assertIsNotNone(fs)
+         self.assertIsInstance(fs, blivet.devices.StratisFilesystemDevice)
+         self.assertAlmostEqual(fs.size, blivet.size.Size("2 GiB"), delta=blivet.size.Size("10 MiB"))
++
++    def test_stratis_add_device(self):
++        disk1 = self.storage.devicetree.get_device_by_path(self.vdevs[0])
++        self.assertIsNotNone(disk1)
++        self.storage.initialize_disk(disk1)
++
++        bd1 = self.storage.new_partition(size=blivet.size.Size("1 GiB"), fmt_type="stratis",
++                                         parents=[disk1])
++        self.storage.create_device(bd1)
++
++        blivet.partitioning.do_partitioning(self.storage)
++
++        pool = self.storage.new_stratis_pool(name="blivetTestPool", parents=[bd1])
++        self.storage.create_device(pool)
++
++        self.storage.do_it()
++        self.storage.reset()
++
++        disk2 = self.storage.devicetree.get_device_by_path(self.vdevs[1])
++        self.assertIsNotNone(disk2)
++        self.storage.initialize_disk(disk2)
++
++        bd2 = self.storage.new_partition(size=blivet.size.Size("1 GiB"), fmt_type="stratis",
++                                         parents=[disk2])
++        self.storage.create_device(bd2)
++
++        blivet.partitioning.do_partitioning(self.storage)
++
++        pool = self.storage.devicetree.get_device_by_name("blivetTestPool")
++
++        ac = blivet.deviceaction.ActionAddMember(pool, bd2)
++        self.storage.devicetree.actions.add(ac)
++        self.storage.do_it()
++        self.storage.reset()
++
++        pool = self.storage.devicetree.get_device_by_name("blivetTestPool")
++        self.assertIsNotNone(pool)
++        self.assertEqual(len(pool.parents), 2)
++        self.assertCountEqual([p.path for p in pool.parents], [self.vdevs[0] + "1", self.vdevs[1] + "1"])
++
++        bd2 = self.storage.devicetree.get_device_by_path(self.vdevs[1] + "1")
++        self.assertEqual(bd2.format.pool_name, pool.name)
++        self.assertEqual(bd2.format.pool_uuid, pool.uuid)
+
+From c62d54dcccd2bee5dfa631c7aa4cbdb4eefa0b8a Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 12 Apr 2024 15:52:02 +0200
+Subject: [PATCH 05/16] Base StratisPoolDevice on ContainerDevice instead of
+ StorageDevice
+
+Stratis pool is a container and we need to base it on
+ContainerDevice to support some features like member management.
+---
+ blivet/devices/stratis.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/blivet/devices/stratis.py b/blivet/devices/stratis.py
+index 317b80b36..db89cfaf8 100644
+--- a/blivet/devices/stratis.py
++++ b/blivet/devices/stratis.py
+@@ -26,6 +26,7 @@
+ 
+ from collections import defaultdict
+ 
++from .container import ContainerDevice
+ from .storage import StorageDevice
+ from ..static_data import stratis_info
+ from ..storage_log import log_method_call
+@@ -35,7 +36,7 @@
+ from .. import devicelibs
+ 
+ 
+-class StratisPoolDevice(StorageDevice):
++class StratisPoolDevice(ContainerDevice):
+     """ A stratis pool device """
+ 
+     _type = "stratis pool"
+
+From 22724192cc2160771de211e90a1fa3347e6dc1d2 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Thu, 18 Apr 2024 16:14:07 +0200
+Subject: [PATCH 06/16] Make sure to include stderr when gathering output of
+ stratis tools
+
+Without this we won't get any error message when the call fails.
+---
+ blivet/devicelibs/stratis.py | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/blivet/devicelibs/stratis.py b/blivet/devicelibs/stratis.py
+index 1f7432344..d76339b51 100644
+--- a/blivet/devicelibs/stratis.py
++++ b/blivet/devicelibs/stratis.py
+@@ -60,7 +60,7 @@ def pool_used(dev_sizes, encrypted=False):
+     if encrypted:
+         cmd.append("--encrypted")
+ 
+-    rc, out = util.run_program_and_capture_output(cmd)
++    rc, out = util.run_program_and_capture_output(cmd, stderr_to_stdout=True)
+     if rc:
+         raise StratisError("Failed to predict usage for stratis pool")
+ 
+@@ -78,7 +78,8 @@ def filesystem_md_size(fs_size):
+ 
+     rc, out = util.run_program_and_capture_output([availability.STRATISPREDICTUSAGE_APP.name, "filesystem",
+                                                    "--filesystem-size",
+-                                                   str(fs_size.get_bytes())])
++                                                   str(fs_size.get_bytes())],
++                                                  stderr_to_stdout=True)
+     if rc:
+         raise StratisError("Failed to predict usage for stratis filesystem: %s" % out)
+ 
+
+From db1e411b5bd8935a29348697ba4e5c1857173e01 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 19 Apr 2024 12:44:19 +0200
+Subject: [PATCH 07/16] Round Stratis Filesystem size down to the nearest
+ sector
+
+Stratis requires sizes to be rounded for the filesystems.
+---
+ blivet/devices/stratis.py                     | 9 ++++++++-
+ tests/unit_tests/devices_test/stratis_test.py | 9 +++++++++
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/blivet/devices/stratis.py b/blivet/devices/stratis.py
+index db89cfaf8..573ab8bd5 100644
+--- a/blivet/devices/stratis.py
++++ b/blivet/devices/stratis.py
+@@ -27,11 +27,12 @@
+ from collections import defaultdict
+ 
+ from .container import ContainerDevice
++from .lib import LINUX_SECTOR_SIZE
+ from .storage import StorageDevice
+ from ..static_data import stratis_info
+ from ..storage_log import log_method_call
+ from ..errors import DeviceError, StratisError, InconsistentParentSectorSize
+-from ..size import Size
++from ..size import Size, ROUND_DOWN
+ from ..tasks import availability
+ from .. import devicelibs
+ 
+@@ -228,6 +229,12 @@ class StratisFilesystemDevice(StorageDevice):
+     def __init__(self, name, parents=None, size=None, uuid=None, exists=False):
+         if size is None:
+             size = devicelibs.stratis.STRATIS_FS_SIZE
++
++        # round size down to the nearest sector
++        if not exists and size % LINUX_SECTOR_SIZE:
++            log.info("%s: rounding size %s down to the nearest sector", name, size)
++            size = size.round_to_nearest(LINUX_SECTOR_SIZE, ROUND_DOWN)
++
+         if not exists and parents[0].free_space <= devicelibs.stratis.filesystem_md_size(size):
+             raise StratisError("cannot create new stratis filesystem, not enough free space in the pool")
+ 
+diff --git a/tests/unit_tests/devices_test/stratis_test.py b/tests/unit_tests/devices_test/stratis_test.py
+index cbdd225ed..539995030 100644
+--- a/tests/unit_tests/devices_test/stratis_test.py
++++ b/tests/unit_tests/devices_test/stratis_test.py
+@@ -165,3 +165,12 @@ def test_pool_inconsistent_sector_size(self):
+             mock_property.__get__ = lambda _mock, bd, _class: 512 if bd.name == "bd1" else 4096
+             with self.assertRaisesRegex(InconsistentParentSectorSize, "Cannot create pool"):
+                 StratisPoolDevice("testpool", parents=[bd, bd2])
++
++    def test_filesystem_round_size(self):
++        bd = StorageDevice("bd1", fmt=blivet.formats.get_format("stratis"),
++                           size=Size("2 GiB"), exists=False)
++        pool = StratisPoolDevice("testpool", parents=[bd])
++
++        fs = StratisFilesystemDevice("testfs", parents=[pool], size=Size("1 GiB") + Size(1))
++        # size should be rounded down to 1 GiB
++        self.assertEqual(fs.size, Size("1 GiB"))
+
+From dfedd1932e7473a92d3e49e6fb0d9cd4f0a6ddec Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 19 Apr 2024 13:33:00 +0200
+Subject: [PATCH 08/16] Add support for creating encrypted Stratis pool with
+ Clevis
+
+Both Clevis/Tang and TPM2 is supported by this implementation.
+---
+ blivet/devicelibs/stratis.py                  | 14 +++-
+ blivet/devices/stratis.py                     | 12 +++-
+ blivet/populator/helpers/stratis.py           | 16 ++++-
+ blivet/static_data/stratis_info.py            | 11 ++-
+ .../devices_test/stratis_test.py              | 69 ++++++++++++++++++-
+ tests/unit_tests/devices_test/stratis_test.py | 38 +++++++++-
+ 6 files changed, 148 insertions(+), 12 deletions(-)
+
+diff --git a/blivet/devicelibs/stratis.py b/blivet/devicelibs/stratis.py
+index d76339b51..3f0aaf29c 100644
+--- a/blivet/devicelibs/stratis.py
++++ b/blivet/devicelibs/stratis.py
+@@ -190,7 +190,7 @@ def unlock_pool(pool_uuid):
+             raise StratisError("Failed to unlock pool: %s" % err)
+ 
+ 
+-def create_pool(name, devices, encrypted, passphrase, key_file):
++def create_pool(name, devices, encrypted, passphrase, key_file, clevis):
+     if not availability.STRATIS_DBUS.available:
+         raise StratisError("Stratis DBus service not available")
+ 
+@@ -203,10 +203,18 @@ def create_pool(name, devices, encrypted, passphrase, key_file):
+         key_desc = "blivet-%s" % name  # XXX what would be a good key description?
+         set_key(key_desc, passphrase, key_file)
+         key_opt = GLib.Variant("(bs)", (True, key_desc))
++        if clevis:
++            clevis_config = {"url": clevis.tang_url}
++            if clevis.tang_thumbprint:
++                clevis_config["thp"] = clevis.tang_thumbprint
++            else:
++                clevis_config["stratis:tang:trust_url"] = True
++            clevis_opt = GLib.Variant("(b(ss))", (True, (clevis.pin, json.dumps(clevis_config))))
++        else:
++            clevis_opt = GLib.Variant("(b(ss))", (False, ("", "")))
+     else:
+         key_opt = GLib.Variant("(bs)", (False, ""))
+-
+-    clevis_opt = GLib.Variant("(b(ss))", (False, ("", "")))
++        clevis_opt = GLib.Variant("(b(ss))", (False, ("", "")))
+ 
+     try:
+         ((succ, _paths), rc, err) = safe_dbus.call_sync(STRATIS_SERVICE,
+diff --git a/blivet/devices/stratis.py b/blivet/devices/stratis.py
+index 573ab8bd5..1f46e43e0 100644
+--- a/blivet/devices/stratis.py
++++ b/blivet/devices/stratis.py
+@@ -34,9 +34,15 @@
+ from ..errors import DeviceError, StratisError, InconsistentParentSectorSize
+ from ..size import Size, ROUND_DOWN
+ from ..tasks import availability
++from ..util import default_namedtuple
+ from .. import devicelibs
+ 
+ 
++StratisClevisConfig = default_namedtuple("StratisClevisConfig", ["pin",
++                                                                 ("tang_url", None),
++                                                                 ("tang_thumbprint", None)])
++
++
+ class StratisPoolDevice(ContainerDevice):
+     """ A stratis pool device """
+ 
+@@ -55,10 +61,13 @@ def __init__(self, *args, **kwargs):
+             :type passphrase: str
+             :keyword key_file: path to a file containing a key
+             :type key_file: str
++            :keyword clevis: clevis configuration
++            :type: StratisClevisConfig
+         """
+         self._encrypted = kwargs.pop("encrypted", False)
+         self.__passphrase = kwargs.pop("passphrase", None)
+         self._key_file = kwargs.pop("key_file", None)
++        self._clevis = kwargs.pop("clevis", None)
+ 
+         super(StratisPoolDevice, self).__init__(*args, **kwargs)
+ 
+@@ -150,7 +159,8 @@ def _create(self):
+                                        devices=bd_list,
+                                        encrypted=self.encrypted,
+                                        passphrase=self.__passphrase,
+-                                       key_file=self._key_file)
++                                       key_file=self._key_file,
++                                       clevis=self._clevis)
+ 
+     def _post_create(self):
+         super(StratisPoolDevice, self)._post_create()
+diff --git a/blivet/populator/helpers/stratis.py b/blivet/populator/helpers/stratis.py
+index ddcd8ec53..0a3da927d 100644
+--- a/blivet/populator/helpers/stratis.py
++++ b/blivet/populator/helpers/stratis.py
+@@ -21,11 +21,12 @@
+ #
+ 
+ import copy
++import json
+ 
+ from ...callbacks import callbacks
+ from ... import udev
+ from ...formats import get_format
+-from ...devices.stratis import StratisPoolDevice, StratisFilesystemDevice
++from ...devices.stratis import StratisPoolDevice, StratisFilesystemDevice, StratisClevisConfig
+ from ...devicelibs.stratis import STRATIS_FS_SIZE
+ from ...storage_log import log_method_call
+ from .formatpopulator import FormatPopulator
+@@ -120,12 +121,23 @@ def _add_pool_device(self):
+         elif pool_device is None:
+             # TODO: stratis duplicate pool name
+ 
++            if pool_info.clevis:
++                if pool_info.clevis[0] == "tang":
++                    data = json.loads(pool_info.clevis[1])
++                    clevis_info = StratisClevisConfig(pin=pool_info.clevis[0], tang_url=data["url"],
++                                                      tang_thumbprint=data["thp"])
++                else:
++                    clevis_info = StratisClevisConfig(pin=pool_info.clevis[0])
++            else:
++                clevis_info = None
++
+             pool_device = StratisPoolDevice(pool_info.name,
+                                             parents=[self.device],
+                                             uuid=pool_info.uuid,
+                                             size=pool_info.physical_size,
+                                             exists=True,
+-                                            encrypted=pool_info.encrypted)
++                                            encrypted=pool_info.encrypted,
++                                            clevis=clevis_info)
+             self._devicetree._add_device(pool_device)
+ 
+         # now add filesystems on this pool
+diff --git a/blivet/static_data/stratis_info.py b/blivet/static_data/stratis_info.py
+index 42f230ee5..774814500 100644
+--- a/blivet/static_data/stratis_info.py
++++ b/blivet/static_data/stratis_info.py
+@@ -41,7 +41,7 @@
+ STRATIS_MANAGER_INTF = STRATIS_SERVICE + ".Manager.r0"
+ 
+ 
+-StratisPoolInfo = namedtuple("StratisPoolInfo", ["name", "uuid", "physical_size", "physical_used", "object_path", "encrypted"])
++StratisPoolInfo = namedtuple("StratisPoolInfo", ["name", "uuid", "physical_size", "physical_used", "object_path", "encrypted", "clevis"])
+ StratisFilesystemInfo = namedtuple("StratisFilesystemInfo", ["name", "uuid", "used_size", "pool_name",
+                                                              "pool_uuid", "object_path"])
+ StratisBlockdevInfo = namedtuple("StratisBlockdevInfo", ["path", "uuid", "pool_name", "pool_uuid", "object_path"])
+@@ -78,9 +78,16 @@ def _get_pool_info(self, pool_path):
+                         properties["Name"], pool_used)
+             pool_used = 0
+ 
++        clevis_info = properties.get("ClevisInfo", None)
++        if not clevis_info or not clevis_info[0] or not clevis_info[1][0]:
++            clevis = None
++        else:
++            clevis = clevis_info[1][1]
++
+         return StratisPoolInfo(name=properties["Name"], uuid=properties["Uuid"],
+                                physical_size=Size(pool_size), physical_used=Size(pool_used),
+-                               object_path=pool_path, encrypted=properties["Encrypted"])
++                               object_path=pool_path, encrypted=properties["Encrypted"],
++                               clevis=clevis)
+ 
+     def _get_filesystem_info(self, filesystem_path):
+         try:
+diff --git a/tests/storage_tests/devices_test/stratis_test.py b/tests/storage_tests/devices_test/stratis_test.py
+index cfb645ef5..f6fc73650 100644
+--- a/tests/storage_tests/devices_test/stratis_test.py
++++ b/tests/storage_tests/devices_test/stratis_test.py
+@@ -5,7 +5,7 @@
+ 
+ import blivet
+ 
+-from blivet.devices.stratis import StratisFilesystemDevice
++from blivet.devices.stratis import StratisFilesystemDevice, StratisClevisConfig
+ 
+ 
+ class StratisTestCase(StorageTestCase):
+@@ -126,6 +126,7 @@ def test_stratis_encrypted(self):
+         self.assertEqual(len(pool.parents), 1)
+         self.assertEqual(pool.parents[0], bd)
+         self.assertTrue(pool.encrypted)
++        self.assertIsNone(pool._clevis)
+ 
+     def test_stratis_overprovision(self):
+         disk = self.storage.devicetree.get_device_by_path(self.vdevs[0])
+@@ -205,3 +206,69 @@ def test_stratis_add_device(self):
+         bd2 = self.storage.devicetree.get_device_by_path(self.vdevs[1] + "1")
+         self.assertEqual(bd2.format.pool_name, pool.name)
+         self.assertEqual(bd2.format.pool_uuid, pool.uuid)
++
++
++@unittest.skip("Requires TPM or Tang configuration")
++class StratisTestCaseClevis(StorageTestCase):
++
++    # XXX: we don't have Tang server, this test will be always skipped
++    #      the test cases are kept here for manual testing
++    _tang_server = None
++
++    def test_stratis_encrypted_clevis_tang(self):
++        disk = self.storage.devicetree.get_device_by_path(self.vdevs[0])
++        self.assertIsNotNone(disk)
++        self.storage.initialize_disk(disk)
++
++        bd = self.storage.new_partition(size=blivet.size.Size("1 GiB"), fmt_type="stratis",
++                                        parents=[disk])
++        self.storage.create_device(bd)
++
++        blivet.partitioning.do_partitioning(self.storage)
++
++        pool = self.storage.new_stratis_pool(name="blivetTestPool", parents=[bd],
++                                             encrypted=True, passphrase="abcde",
++                                             clevis=StratisClevisConfig(pin="tang",
++                                                                        tang_url=self._tang_server,
++                                                                        tang_thumbprint=None))
++        self.storage.create_device(pool)
++
++        self.storage.do_it()
++        self.storage.reset()
++
++        pool = self.storage.devicetree.get_device_by_name("blivetTestPool")
++        self.assertIsNotNone(pool)
++        self.assertEqual(pool.type, "stratis pool")
++        self.assertTrue(pool.encrypted)
++        self.assertIsNotNone(pool._clevis)
++        self.assertEqual(pool._clevis.pin, "tang")
++        self.assertEqual(pool._clevis.tang_url, self._tang_server)
++        self.assertIsNotNone(pool._clevis.tang_thumbprint)
++
++    def test_stratis_encrypted_clevis_tpm(self):
++        disk = self.storage.devicetree.get_device_by_path(self.vdevs[0])
++        self.assertIsNotNone(disk)
++        self.storage.initialize_disk(disk)
++
++        bd = self.storage.new_partition(size=blivet.size.Size("1 GiB"), fmt_type="stratis",
++                                        parents=[disk])
++        self.storage.create_device(bd)
++
++        blivet.partitioning.do_partitioning(self.storage)
++
++        pool = self.storage.new_stratis_pool(name="blivetTestPool", parents=[bd],
++                                             encrypted=True, passphrase="abcde",
++                                             clevis=StratisClevisConfig(pin="tpm2"))
++        self.storage.create_device(pool)
++
++        self.storage.do_it()
++        self.storage.reset()
++
++        pool = self.storage.devicetree.get_device_by_name("blivetTestPool")
++        self.assertIsNotNone(pool)
++        self.assertEqual(pool.type, "stratis pool")
++        self.assertTrue(pool.encrypted)
++        self.assertIsNotNone(pool._clevis)
++        self.assertEqual(pool._clevis.pin, "tpm2")
++        self.assertIsNone(pool._clevis.tang_url)
++        self.assertIsNone(pool._clevis.tang_thumbprint)
+diff --git a/tests/unit_tests/devices_test/stratis_test.py b/tests/unit_tests/devices_test/stratis_test.py
+index 539995030..e98949310 100644
+--- a/tests/unit_tests/devices_test/stratis_test.py
++++ b/tests/unit_tests/devices_test/stratis_test.py
+@@ -11,6 +11,7 @@
+ from blivet.devices import StorageDevice
+ from blivet.devices import StratisPoolDevice
+ from blivet.devices import StratisFilesystemDevice
++from blivet.devices.stratis import StratisClevisConfig
+ from blivet.errors import StratisError, InconsistentParentSectorSize
+ from blivet.size import Size
+ 
+@@ -66,7 +67,8 @@ def test_new_stratis(self):
+                                                                 devices=['/dev/bd1'],
+                                                                 encrypted=False,
+                                                                 passphrase=None,
+-                                                                key_file=None)
++                                                                key_file=None,
++                                                                clevis=None)
+ 
+         # we would get this from pool._post_create
+         pool.uuid = "c4fc9ebe-e173-4cab-8d81-cc6abddbe02d"
+@@ -103,7 +105,36 @@ def test_new_encrypted_stratis(self):
+                                                                 devices=['/dev/bd1'],
+                                                                 encrypted=True,
+                                                                 passphrase="secret",
+-                                                                key_file=None)
++                                                                key_file=None,
++                                                                clevis=None)
++
++    def test_new_encrypted_stratis_clevis(self):
++        b = blivet.Blivet()
++        bd = StorageDevice("bd1", fmt=blivet.formats.get_format("stratis"),
++                           size=Size("1 GiB"), exists=True)
++
++        b.devicetree._add_device(bd)
++
++        clevis = StratisClevisConfig(pin="tang", tang_url="xxx", tang_thumbprint="xxx")
++        with patch("blivet.devicetree.DeviceTree.names", []):
++            pool = b.new_stratis_pool(name="testpool", parents=[bd], passphrase="secret", encrypted=True, clevis=clevis)
++        self.assertEqual(pool.name, "testpool")
++        self.assertEqual(pool.size, bd.size)
++        self.assertTrue(pool.encrypted)
++        self.assertTrue(pool.has_key)
++
++        b.create_device(pool)
++
++        with patch("blivet.devicelibs.stratis") as stratis_dbus:
++            with patch.object(pool, "_pre_create"):
++                with patch.object(pool, "_post_create"):
++                    pool.create()
++                    stratis_dbus.create_pool.assert_called_with(name='testpool',
++                                                                devices=['/dev/bd1'],
++                                                                encrypted=True,
++                                                                passphrase="secret",
++                                                                key_file=None,
++                                                                clevis=clevis)
+ 
+     def test_new_stratis_no_size(self):
+         b = blivet.Blivet()
+@@ -142,7 +173,8 @@ def test_new_stratis_no_size(self):
+                                                                 devices=['/dev/bd1'],
+                                                                 encrypted=False,
+                                                                 passphrase=None,
+-                                                                key_file=None)
++                                                                key_file=None,
++                                                                clevis=None)
+ 
+         # we would get this from pool._post_create
+         pool.uuid = "c4fc9ebe-e173-4cab-8d81-cc6abddbe02d"
+
+From a5c59da655a739854ed00881fa985c1b898894f1 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 23 Apr 2024 14:57:01 +0200
+Subject: [PATCH 09/16] Add support for unlocking locked Stratis pools with
+ Clevis
+
+---
+ blivet/devicelibs/stratis.py                     |  4 ++--
+ blivet/formats/stratis.py                        | 14 ++++++++++----
+ blivet/populator/helpers/stratis.py              |  1 +
+ blivet/static_data/stratis_info.py               | 11 ++++++++++-
+ tests/storage_tests/devices_test/stratis_test.py |  2 +-
+ 5 files changed, 24 insertions(+), 8 deletions(-)
+
+diff --git a/blivet/devicelibs/stratis.py b/blivet/devicelibs/stratis.py
+index 3f0aaf29c..462fb8cc5 100644
+--- a/blivet/devicelibs/stratis.py
++++ b/blivet/devicelibs/stratis.py
+@@ -173,7 +173,7 @@ def set_key(key_desc, passphrase, key_file):
+             os.close(write)
+ 
+ 
+-def unlock_pool(pool_uuid):
++def unlock_pool(pool_uuid, method):
+     if not availability.STRATIS_DBUS.available:
+         raise StratisError("Stratis DBus service not available")
+ 
+@@ -182,7 +182,7 @@ def unlock_pool(pool_uuid):
+                                                       STRATIS_PATH,
+                                                       STRATIS_MANAGER_INTF,
+                                                       "UnlockPool",
+-                                                      GLib.Variant("(ss)", (pool_uuid, "keyring")))
++                                                      GLib.Variant("(ss)", (pool_uuid, method)))
+     except safe_dbus.DBusCallError as e:
+         raise StratisError("Failed to unlock pool: %s" % str(e))
+     else:
+diff --git a/blivet/formats/stratis.py b/blivet/formats/stratis.py
+index dbb0528d8..ac5ea63c5 100644
+--- a/blivet/formats/stratis.py
++++ b/blivet/formats/stratis.py
+@@ -62,6 +62,8 @@ def __init__(self, **kwargs):
+             :type passphrase: str
+             :keyword key_file: path to a file containing a key
+             :type key_file: str
++            :keyword locked_pool_clevis_pin: clevis PIN for locked pool (either 'tang' or 'tpm')
++            :type locked_pool_clevis_pin: str
+ 
+             .. note::
+ 
+@@ -78,6 +80,7 @@ def __init__(self, **kwargs):
+         self.pool_uuid = kwargs.get("pool_uuid")
+         self.locked_pool = kwargs.get("locked_pool")
+         self.locked_pool_key_desc = kwargs.get("locked_pool_key_desc")
++        self.locked_pool_clevis_pin = kwargs.get("locked_pool_clevis_pin")
+ 
+         self.__passphrase = kwargs.get("passphrase")
+         self._key_file = kwargs.get("key_file")
+@@ -119,14 +122,17 @@ def unlock_pool(self):
+         if not self.locked_pool:
+             raise StratisError("This device doesn't contain a locked Stratis pool")
+ 
+-        if not self.has_key:
++        if not self.has_key and not self.locked_pool_clevis_pin:
+             raise StratisError("No passphrase/key file for the locked Stratis pool")
+ 
+-        if not self.locked_pool_key_desc:
++        if not self.locked_pool_key_desc and not self.locked_pool_clevis_pin:
+             raise StratisError("No key description for the locked Stratis pool")
+ 
+-        stratis.set_key(self.locked_pool_key_desc, self.__passphrase, self.key_file)
+-        stratis.unlock_pool(self.pool_uuid)
++        if self.has_key:
++            stratis.set_key(self.locked_pool_key_desc, self.__passphrase, self.key_file)
++            stratis.unlock_pool(self.pool_uuid, method="keyring")
++        else:
++            stratis.unlock_pool(self.pool_uuid, method="clevis")
+ 
+ 
+ register_device_format(StratisBlockdev)
+diff --git a/blivet/populator/helpers/stratis.py b/blivet/populator/helpers/stratis.py
+index 0a3da927d..e3cdfdb5f 100644
+--- a/blivet/populator/helpers/stratis.py
++++ b/blivet/populator/helpers/stratis.py
+@@ -83,6 +83,7 @@ def _get_kwargs(self):
+                 kwargs["locked_pool"] = True
+                 kwargs["pool_uuid"] = pool.uuid
+                 kwargs["locked_pool_key_desc"] = pool.key_desc
++                kwargs["locked_pool_clevis_pin"] = pool.clevis
+                 return kwargs
+ 
+         bd_info = stratis_info.blockdevs.get(uuid)
+diff --git a/blivet/static_data/stratis_info.py b/blivet/static_data/stratis_info.py
+index 774814500..6a4c41f20 100644
+--- a/blivet/static_data/stratis_info.py
++++ b/blivet/static_data/stratis_info.py
+@@ -45,7 +45,7 @@
+ StratisFilesystemInfo = namedtuple("StratisFilesystemInfo", ["name", "uuid", "used_size", "pool_name",
+                                                              "pool_uuid", "object_path"])
+ StratisBlockdevInfo = namedtuple("StratisBlockdevInfo", ["path", "uuid", "pool_name", "pool_uuid", "object_path"])
+-StratisLockedPoolInfo = namedtuple("StratisLockedPoolInfo", ["uuid", "key_desc", "devices"])
++StratisLockedPoolInfo = namedtuple("StratisLockedPoolInfo", ["uuid", "key_desc", "clevis", "devices"])
+ 
+ 
+ class StratisInfo(object):
+@@ -165,8 +165,17 @@ def _get_locked_pools_info(self):
+             if not valid:
+                 log.info("Locked Stratis pool %s doesn't have a valid key description: %s", pool_uuid, description)
+                 description = None
++            valid, (clevis_set, (pin, _options)) = pools_info[pool_uuid]["clevis_info"]
++            if not valid:
++                log.info("Locked Stratis pool %s doesn't have a valid clevis info", pool_uuid)
++                clevis = None
++            elif not clevis_set:
++                clevis = None
++            else:
++                clevis = pin
+             info = StratisLockedPoolInfo(uuid=pool_uuid,
+                                          key_desc=description,
++                                         clevis=clevis,
+                                          devices=[d["devnode"] for d in pools_info[pool_uuid]["devs"]])
+             locked_pools.append(info)
+ 
+diff --git a/tests/storage_tests/devices_test/stratis_test.py b/tests/storage_tests/devices_test/stratis_test.py
+index f6fc73650..147078e7f 100644
+--- a/tests/storage_tests/devices_test/stratis_test.py
++++ b/tests/storage_tests/devices_test/stratis_test.py
+@@ -209,7 +209,7 @@ def test_stratis_add_device(self):
+ 
+ 
+ @unittest.skip("Requires TPM or Tang configuration")
+-class StratisTestCaseClevis(StorageTestCase):
++class StratisTestCaseClevis(StratisTestCase):
+ 
+     # XXX: we don't have Tang server, this test will be always skipped
+     #      the test cases are kept here for manual testing
+
+From 696f8a3bf42e07620b9285146ddcd0769b8e92a2 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 24 Apr 2024 09:38:02 +0200
+Subject: [PATCH 10/16] Catch JSONDecodeError when parsing Stratis Clevis info
+
+---
+ blivet/populator/helpers/stratis.py | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/blivet/populator/helpers/stratis.py b/blivet/populator/helpers/stratis.py
+index e3cdfdb5f..c813eed2d 100644
+--- a/blivet/populator/helpers/stratis.py
++++ b/blivet/populator/helpers/stratis.py
+@@ -124,9 +124,16 @@ def _add_pool_device(self):
+ 
+             if pool_info.clevis:
+                 if pool_info.clevis[0] == "tang":
+-                    data = json.loads(pool_info.clevis[1])
+-                    clevis_info = StratisClevisConfig(pin=pool_info.clevis[0], tang_url=data["url"],
+-                                                      tang_thumbprint=data["thp"])
++                    try:
++                        data = json.loads(pool_info.clevis[1])
++                    except json.JSONDecodeError:
++                        log.warning("failed to decode tang configuration for stratis pool %s",
++                                    self.device.name)
++                        clevis_info = StratisClevisConfig(pin=pool_info.clevis[0])
++                    else:
++                        clevis_info = StratisClevisConfig(pin=pool_info.clevis[0],
++                                                          tang_url=data["url"],
++                                                          tang_thumbprint=data["thp"])
+                 else:
+                     clevis_info = StratisClevisConfig(pin=pool_info.clevis[0])
+             else:
+
+From 056b543425504cf22707b9887c65bbe652fb6676 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 26 Apr 2024 13:45:36 +0200
+Subject: [PATCH 11/16] safe-dbus: Allow using custom timeouts for the DBus
+ calls
+
+---
+ blivet/safe_dbus.py | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/blivet/safe_dbus.py b/blivet/safe_dbus.py
+index 76416f901..7151ad45a 100644
+--- a/blivet/safe_dbus.py
++++ b/blivet/safe_dbus.py
+@@ -100,7 +100,7 @@ def get_new_session_connection():
+ 
+ 
+ def call_sync(service, obj_path, iface, method, args,
+-              connection=None, fds=None):
++              connection=None, fds=None, timeout=DEFAULT_DBUS_TIMEOUT):
+     """
+     Safely call a given method on a given object of a given service over DBus
+     passing given arguments. If a connection is given, it is used, otherwise a
+@@ -122,6 +122,8 @@ def call_sync(service, obj_path, iface, method, args,
+     :type connection: Gio.DBusConnection
+     :param fds: list of file descriptors for the call
+     :type: Gio.UnixFDList
++    :param timeout: timeout in milliseconds for the call (-1 for default timeout)
++    :type timeout: int
+     :return: unpacked value returned by the method
+     :rtype: tuple with elements that depend on the method
+     :raise DBusCallError: if some DBus related error appears
+@@ -140,7 +142,7 @@ def call_sync(service, obj_path, iface, method, args,
+     try:
+         ret = connection.call_with_unix_fd_list_sync(service, obj_path, iface, method, args,
+                                                      None, Gio.DBusCallFlags.NONE,
+-                                                     DEFAULT_DBUS_TIMEOUT, fds, None)
++                                                     timeout, fds, None)
+     except GLib.GError as gerr:
+         msg = "Failed to call %s method on %s with %s arguments: %s" % \
+               (method, obj_path, args, gerr.message)  # pylint: disable=no-member
+
+From 203f582becca2d5643ad1ea3dce6e6538181c133 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 26 Apr 2024 13:46:56 +0200
+Subject: [PATCH 12/16] Use longer timeout for Stratis DBus calls
+
+We've seen some timeouts for some Stratis calls (especially with
+larger disks and encryption) so we need a longer timeouts for the
+calls. This uses 120 seconds which is the same value which stratis
+CLI uses.
+---
+ blivet/devicelibs/stratis.py | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/blivet/devicelibs/stratis.py b/blivet/devicelibs/stratis.py
+index 462fb8cc5..fd5c5b268 100644
+--- a/blivet/devicelibs/stratis.py
++++ b/blivet/devicelibs/stratis.py
+@@ -46,6 +46,8 @@
+ 
+ STRATIS_FS_SIZE = Size("1 TiB")
+ 
++STRATIS_CALL_TIMEOUT = 120 * 1000  # 120 s (used by stratis-cli by default) in ms
++
+ 
+ safe_name_characters = "0-9a-zA-Z._-"
+ 
+@@ -108,7 +110,8 @@ def remove_pool(pool_uuid):
+                                                      STRATIS_PATH,
+                                                      STRATIS_MANAGER_INTF,
+                                                      "DestroyPool",
+-                                                     GLib.Variant("(o)", (pool_info.object_path,)))
++                                                     GLib.Variant("(o)", (pool_info.object_path,)),
++                                                     timeout=STRATIS_CALL_TIMEOUT)
+     except safe_dbus.DBusCallError as e:
+         raise StratisError("Failed to remove stratis pool: %s" % str(e))
+     else:
+@@ -136,7 +139,8 @@ def remove_filesystem(pool_uuid, fs_uuid):
+                                                      pool_info.object_path,
+                                                      STRATIS_POOL_INTF,
+                                                      "DestroyFilesystems",
+-                                                     GLib.Variant("(ao)", ([fs_info.object_path],)))
++                                                     GLib.Variant("(ao)", ([fs_info.object_path],)),
++                                                     timeout=STRATIS_CALL_TIMEOUT)
+     except safe_dbus.DBusCallError as e:
+         raise StratisError("Failed to remove stratis filesystem: %s" % str(e))
+     else:
+@@ -223,7 +227,8 @@ def create_pool(name, devices, encrypted, passphrase, key_file, clevis):
+                                                         "CreatePool",
+                                                         GLib.Variant("(s(bq)as(bs)(b(ss)))", (name, raid_opt,
+                                                                                               devices, key_opt,
+-                                                                                              clevis_opt)))
++                                                                                              clevis_opt)),
++                                                        timeout=STRATIS_CALL_TIMEOUT)
+     except safe_dbus.DBusCallError as e:
+         raise StratisError("Failed to create stratis pool: %s" % str(e))
+     else:
+@@ -255,7 +260,8 @@ def create_filesystem(name, pool_uuid, fs_size=None):
+                                                         pool_info.object_path,
+                                                         STRATIS_POOL_INTF,
+                                                         "CreateFilesystems",
+-                                                        GLib.Variant("(a(s(bs)))", ([GLib.Variant("(s(bs))", (name, size_opt))],)))
++                                                        GLib.Variant("(a(s(bs)))", ([GLib.Variant("(s(bs))", (name, size_opt))],)),
++                                                        timeout=STRATIS_CALL_TIMEOUT)
+     except safe_dbus.DBusCallError as e:
+         raise StratisError("Failed to create stratis filesystem on '%s': %s" % (pool_info.name, str(e)))
+     else:
+@@ -280,7 +286,8 @@ def add_device(pool_uuid, device):
+                                                         pool_info.object_path,
+                                                         STRATIS_POOL_INTF,
+                                                         "AddDataDevs",
+-                                                        GLib.Variant("(as)", ([device],)))
++                                                        GLib.Variant("(as)", ([device],)),
++                                                        timeout=STRATIS_CALL_TIMEOUT)
+     except safe_dbus.DBusCallError as e:
+         raise StratisError("Failed to create stratis filesystem on '%s': %s" % (pool_info.name, str(e)))
+     else:
+
+From 6c13b6867ddccdfdb9853fc177160630d985e000 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 19 Mar 2024 13:20:31 +0100
+Subject: [PATCH 13/16] Try to start stratisd before checking its availability
+
+stratisd is neither autostarted after installing the package nor
+DBus activated so we need to try to start it first.
+---
+ blivet/tasks/availability.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/blivet/tasks/availability.py b/blivet/tasks/availability.py
+index 85945c776..50642cc18 100644
+--- a/blivet/tasks/availability.py
++++ b/blivet/tasks/availability.py
+@@ -26,6 +26,7 @@
+ 
+ from .. import safe_dbus
+ from ..devicelibs.stratis import STRATIS_SERVICE, STRATIS_PATH
++from .. import util
+ 
+ import gi
+ gi.require_version("BlockDev", "2.0")
+@@ -273,6 +274,11 @@ def availability_errors(self, resource):
+             :returns: [] if the name of the plugin is loaded
+             :rtype: list of str
+         """
++        # try to start the service first
++        ret = util.run_program(["systemctl", "start", resource.name])
++        if ret != 0:
++            return ["DBus service %s not available" % resource.name]
++
+         try:
+             avail = blockdev.utils.dbus_service_available(None, Gio.BusType.SYSTEM, self.dbus_name, self.dbus_path)
+             avail = safe_dbus.check_object_available(self.dbus_name, self.dbus_path)
+@@ -551,4 +557,4 @@ def available_resource(name):
+ STRATISPREDICTUSAGE_APP = application("stratis-predict-usage")
+ 
+ STRATIS_SERVICE_METHOD = DBusMethod(STRATIS_SERVICE, STRATIS_PATH)
+-STRATIS_DBUS = dbus_service("stratis", STRATIS_SERVICE_METHOD)
++STRATIS_DBUS = dbus_service("stratisd", STRATIS_SERVICE_METHOD)
+
+From ce80215802caf5e494dfe2ec3de4851f88c782f0 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 5 Apr 2024 13:07:29 +0200
+Subject: [PATCH 14/16] availability: Fix starting DBus services
+
+We don't want to try to start services that are already running.
+---
+ blivet/tasks/availability.py | 32 +++++++++++++++++---------------
+ 1 file changed, 17 insertions(+), 15 deletions(-)
+
+diff --git a/blivet/tasks/availability.py b/blivet/tasks/availability.py
+index 50642cc18..0c48ce887 100644
+--- a/blivet/tasks/availability.py
++++ b/blivet/tasks/availability.py
+@@ -24,7 +24,6 @@
+ 
+ from six import add_metaclass
+ 
+-from .. import safe_dbus
+ from ..devicelibs.stratis import STRATIS_SERVICE, STRATIS_PATH
+ from .. import util
+ 
+@@ -265,6 +264,14 @@ def __init__(self, dbus_name, dbus_path):
+         self.dbus_path = dbus_path
+         self._availability_errors = None
+ 
++    def _service_available(self):
++        try:
++            avail = blockdev.utils.dbus_service_available(None, Gio.BusType.SYSTEM, self.dbus_name, self.dbus_path)
++        except blockdev.UtilsError:
++            return False
++        else:
++            return avail
++
+     def availability_errors(self, resource):
+         """ Returns [] if the service is available.
+ 
+@@ -274,21 +281,16 @@ def availability_errors(self, resource):
+             :returns: [] if the name of the plugin is loaded
+             :rtype: list of str
+         """
+-        # try to start the service first
+-        ret = util.run_program(["systemctl", "start", resource.name])
+-        if ret != 0:
+-            return ["DBus service %s not available" % resource.name]
+-
+-        try:
+-            avail = blockdev.utils.dbus_service_available(None, Gio.BusType.SYSTEM, self.dbus_name, self.dbus_path)
+-            avail = safe_dbus.check_object_available(self.dbus_name, self.dbus_path)
+-        except safe_dbus.DBusCallError:
+-            return ["DBus service %s not available" % resource.name]
+-        else:
+-            if avail:
+-                return []
+-            else:
++        if not self._service_available():
++            # try to start the service first
++            ret = util.run_program(["systemctl", "start", resource.name])
++            if ret != 0:
+                 return ["DBus service %s not available" % resource.name]
++            # try again now when the service should be started
++            else:
++                if not self._service_available():
++                    return ["DBus service %s not available" % resource.name]
++        return []
+ 
+ 
+ class _UnavailableMethod(Method):
+
+From 35bdbd64b670493397cd796be247cfe5fbfb4196 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 6 May 2024 13:44:39 +0200
+Subject: [PATCH 15/16] Add a Stratis example with pool encryption using
+ Clevis/Tang
+
+---
+ examples/stratis_clevis_tang.py | 65 +++++++++++++++++++++++++++++++++
+ 1 file changed, 65 insertions(+)
+ create mode 100644 examples/stratis_clevis_tang.py
+
+diff --git a/examples/stratis_clevis_tang.py b/examples/stratis_clevis_tang.py
+new file mode 100644
+index 000000000..44bb9d378
+--- /dev/null
++++ b/examples/stratis_clevis_tang.py
+@@ -0,0 +1,65 @@
++import os
++import sys
++
++import blivet
++from blivet.devices.stratis import StratisClevisConfig
++from blivet.size import Size
++from blivet.util import set_up_logging, create_sparse_tempfile
++
++
++TANG_URL = None         # URL/IP and port of the Tang server
++TANG_THUMBPRINT = None  # thumbprint for verifying the server or None to configure without verification
++
++
++set_up_logging()
++b = blivet.Blivet()   # create an instance of Blivet (don't add system devices)
++
++if TANG_URL is None:
++    print("Please set Tang server URL before running this example")
++    sys.exit(1)
++
++# create a disk image file on which to create new devices
++disk1_file = create_sparse_tempfile("disk1", Size("100GiB"))
++b.disk_images["disk1"] = disk1_file
++disk2_file = create_sparse_tempfile("disk2", Size("100GiB"))
++b.disk_images["disk2"] = disk2_file
++
++b.reset()
++
++try:
++    disk1 = b.devicetree.get_device_by_name("disk1")
++    disk2 = b.devicetree.get_device_by_name("disk2")
++
++    b.initialize_disk(disk1)
++    b.initialize_disk(disk2)
++
++    bd = b.new_partition(size=Size("50GiB"), fmt_type="stratis", parents=[disk1])
++    b.create_device(bd)
++    bd2 = b.new_partition(size=Size("50GiB"), fmt_type="stratis", parents=[disk2])
++    b.create_device(bd2)
++
++    # allocate the partitions (decide where and on which disks they'll reside)
++    blivet.partitioning.do_partitioning(b)
++
++    # clevis configuration specification, TPM can be used by setting "pin" to "tpm2"
++    clevis_info = StratisClevisConfig(pin="tang",
++                                      tang_url=TANG_URL,
++                                      tang_thumbprint=TANG_THUMBPRINT)
++    pool = b.new_stratis_pool(name="stratis_pool",
++                              parents=[bd, bd2],
++                              encrypted=True, passphrase="secret",
++                              clevis=clevis_info)
++    b.create_device(pool)
++
++    print(b.devicetree)
++
++    # write the new partitions to disk and format them as specified
++    b.do_it()
++    print(b.devicetree)
++    input("Check the state and hit ENTER to trigger cleanup")
++finally:
++    b.devicetree.recursive_remove(pool)
++    b.do_it()
++    b.devicetree.teardown_disk_images()
++    os.unlink(disk1_file)
++    os.unlink(disk2_file)
+
+From d32b2f854d08ef089e1c67185900226fc69ce6e6 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 7 May 2024 09:55:43 +0200
+Subject: [PATCH 16/16] tests: Add a base class for stratis tests
+
+To avoid re-running all the test cases from StratisTestCase in
+StratisTestCaseClevis.
+---
+ tests/storage_tests/devices_test/stratis_test.py | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/tests/storage_tests/devices_test/stratis_test.py b/tests/storage_tests/devices_test/stratis_test.py
+index 147078e7f..5aaa12d4f 100644
+--- a/tests/storage_tests/devices_test/stratis_test.py
++++ b/tests/storage_tests/devices_test/stratis_test.py
+@@ -8,7 +8,7 @@
+ from blivet.devices.stratis import StratisFilesystemDevice, StratisClevisConfig
+ 
+ 
+-class StratisTestCase(StorageTestCase):
++class StratisTestCaseBase(StorageTestCase):
+ 
+     @classmethod
+     def setUpClass(cls):
+@@ -42,6 +42,9 @@ def _clean_up(self):
+ 
+         return super()._clean_up()
+ 
++
++class StratisTestCase(StratisTestCaseBase):
++
+     def test_stratis_basic(self):
+         disk = self.storage.devicetree.get_device_by_path(self.vdevs[0])
+         self.assertIsNotNone(disk)
+@@ -209,7 +212,7 @@ def test_stratis_add_device(self):
+ 
+ 
+ @unittest.skip("Requires TPM or Tang configuration")
+-class StratisTestCaseClevis(StratisTestCase):
++class StratisTestCaseClevis(StratisTestCaseBase):
+ 
+     # XXX: we don't have Tang server, this test will be always skipped
+     #      the test cases are kept here for manual testing
