@@ -1,0 +1,35 @@
+From b7f03738543a4bb416fb19c7138f0b9d3049af61 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 8 Nov 2024 09:19:45 +0100
+Subject: [PATCH] Fix "Modified passphrase in stratis test"
+
+Follow up for 68708e347ef7b2f98312c76aa80366091dd4aade, two more
+places where the passphrase is too short for FIPS mode.
+
+Resolves: RHEL-8029
+---
+ tests/storage_tests/devices_test/stratis_test.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tests/storage_tests/devices_test/stratis_test.py b/tests/storage_tests/devices_test/stratis_test.py
+index 21c4d0f50..9792e0618 100644
+--- a/tests/storage_tests/devices_test/stratis_test.py
++++ b/tests/storage_tests/devices_test/stratis_test.py
+@@ -105,7 +105,7 @@ def test_stratis_encrypted(self):
+         blivet.partitioning.do_partitioning(self.storage)
+ 
+         pool = self.storage.new_stratis_pool(name="blivetTestPool", parents=[bd],
+-                                             encrypted=True, passphrase="abcde")
++                                             encrypted=True, passphrase="fipsneeds8chars")
+         self.storage.create_device(pool)
+ 
+         self.storage.do_it()
+@@ -260,7 +260,7 @@ def test_stratis_encrypted_clevis_tpm(self):
+         blivet.partitioning.do_partitioning(self.storage)
+ 
+         pool = self.storage.new_stratis_pool(name="blivetTestPool", parents=[bd],
+-                                             encrypted=True, passphrase="abcde",
++                                             encrypted=True, passphrase="fipsneeds8chars",
+                                              clevis=StratisClevisConfig(pin="tpm2"))
+         self.storage.create_device(pool)
+ 

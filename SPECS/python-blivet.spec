@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 17%{?prerelease}%{?dist}
+Release: 23%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -56,6 +56,12 @@ Patch22: 0023-Do-not-add-new-PVs-to-the-LVM-devices-file-if-it-doe.patch
 Patch23: 0024-Added-support-for-PV-grow.patch
 Patch24: 0025-Stratis-fixes-backport.patch
 Patch25: 0026-XFS-resize-test-fix.patch
+Patch26: 0027-RHEL96-bugfixes-1.patch
+Patch27: 0028-Fix-checking-for-NVMe-plugin-availability.patch
+Patch28: 0029-Align-sizes-up-for-growable-LVs.patch
+Patch29: 0030-mod_pass_in_stratis_test.patch
+Patch30: 0031-Fix_running_tests_in_FIPS_mode.patch
+Patch31: 0032-Set-persistent-allow-discards-flag-for-new-LUKS-devices.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -219,6 +225,33 @@ configuration.
 %endif
 
 %changelog
+* Tue Mar 11 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-23
+- Set persistent allow-discards flag for newly created LUKS devices
+  Resolves: RHEL-82430
+
+* Tue Nov 12 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-22
+- Fix running tests in FIPS mode
+  Resolves: RHEL-8029
+
+* Fri Nov 1 2024 Jan Pokorny <japokorn@redhat.com> - 3.6.0-21
+- Modified passphrase in stratis test
+  Resolves: RHEL-8029
+
+* Thu Oct 24 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-20
+- Align sizes up for growable LVs
+  Resolves: RHEL-8036
+  Resolves: RHEL-19725
+
+* Mon Sep 23 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-19
+- Fix checking for NVMe plugin availability
+  Resolves: RHEL-28124
+
+* Mon Sep 09 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-18
+- Add a basic read-only support for UDF filesystem
+  Resolves: RHEL-13329
+- nvme: Skip startup/write when NVMe plugin isn't available
+  Resolves: RHEL-28124
+
 * Mon Jul 22 2024 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-17
 - Fix 'Try waiting after partition creation for XFS resize test'
   Resolves: RHEL-8009

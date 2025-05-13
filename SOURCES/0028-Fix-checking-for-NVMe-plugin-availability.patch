@@ -1,0 +1,27 @@
+From 7677fc312b821a9c67750220f2494d06f2357780 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 18 Sep 2024 15:30:05 +0200
+Subject: [PATCH] Fix checking for NVMe plugin availability
+
+---
+ blivet/nvme.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/blivet/nvme.py b/blivet/nvme.py
+index 4309dea3..72a47070 100644
+--- a/blivet/nvme.py
++++ b/blivet/nvme.py
+@@ -76,6 +76,10 @@ class NVMe(object):
+             return False
+         if not hasattr(blockdev.NVMETech, "FABRICS"):
+             return False
++        try:
++            blockdev.nvme.is_tech_avail(blockdev.NVMETech.FABRICS, 0)  # pylint: disable=no-member
++        except (blockdev.BlockDevNotImplementedError, blockdev.NVMEError):
++            return False
+         return True
+ 
+     def startup(self):
+-- 
+2.46.1
+
