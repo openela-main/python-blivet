@@ -1,0 +1,742 @@
+From 492122f34fe0ee5d0c7bce7f3dd2ce0ca6e3e9f2 Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Fri, 27 Jan 2023 22:01:23 +0100
+Subject: [PATCH 1/7] blivet/zfcp: drop modprobe alias, which is superfluous
+ since udev in RHEL6
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/zfcp.py | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/blivet/zfcp.py b/blivet/zfcp.py
+index a2b7facb..cd765d82 100644
+--- a/blivet/zfcp.py
++++ b/blivet/zfcp.py
+@@ -555,9 +555,6 @@ class zFCP:
+             f.write("%s\n" % (d,))
+         f.close()
+ 
+-        f = open(root + "/etc/modprobe.conf", "a")
+-        f.write("alias scsi_hostadapter zfcp\n")
+-        f.close()
+ 
+ 
+ # Create ZFCP singleton
+-- 
+2.45.2
+
+
+From a49fdf291acad957675472f5c27be9e5269c199a Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Tue, 28 Feb 2023 17:23:32 +0100
+Subject: [PATCH 2/7] blivet/zfcp: remove code broken since zfcp automatic LUN
+ scan
+
+The old existing test preceding the removed code was only designed for the
+old zfcp before it got automatic LUN scan. Hence, the test is incomplete.
+With zfcp auto LUN scan, zfcp can just have SCSI devices without any
+zfcp unit representation in sysfs.
+Do not bother cleaning up an unused FCP device and just remove the code.
+
+Note: Do not confuse zfcp auto port scan with zfcp auto LUN scan.
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/zfcp.py | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/blivet/zfcp.py b/blivet/zfcp.py
+index cd765d82..e2c0dc2d 100644
+--- a/blivet/zfcp.py
++++ b/blivet/zfcp.py
+@@ -384,9 +384,6 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+                          self.devnum, luns[0])
+                 return True
+ 
+-        # no other WWPNs/LUNs exists for this device number, it's safe to bring it offline
+-        self._set_zfcp_device_offline()
+-
+         return True
+ 
+ 
+-- 
+2.45.2
+
+
+From 19285bb785ccbfcd72fd1f3242c56e9d06ba74d8 Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Fri, 27 Jan 2023 22:17:45 +0100
+Subject: [PATCH 3/7] blivet/zfcp: drop old zfcp port handling gone from the
+ kernel long ago
+
+Gone since 2008 Linux kernel v2.6.27 commit 235f7f25f492 ("[SCSI] zfcp:
+Remove sysfs attribute port_add").
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/zfcp.py | 65 --------------------------------------------------
+ 1 file changed, 65 deletions(-)
+
+diff --git a/blivet/zfcp.py b/blivet/zfcp.py
+index e2c0dc2d..82751382 100644
+--- a/blivet/zfcp.py
++++ b/blivet/zfcp.py
+@@ -240,7 +240,6 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+ 
+         super().online_device()
+ 
+-        portadd = "%s/%s/port_add" % (zfcpsysfs, self.devnum)
+         portdir = "%s/%s/%s" % (zfcpsysfs, self.devnum, self.wwpn)
+         unitadd = "%s/unit_add" % (portdir)
+         unitdir = "%s/%s" % (portdir, self.fcplun)
+@@ -253,31 +252,6 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+             log.warning("zFCP device %s in NPIV mode brought online. All LUNs will be activated "
+                         "automatically although WWPN and LUN have been provided.", self.devnum)
+ 
+-        # create the sysfs directory for the WWPN/port
+-        if not os.path.exists(portdir):
+-            if os.path.exists(portadd):
+-                # older zfcp sysfs interface
+-                try:
+-                    logged_write_line_to_file(portadd, self.wwpn)
+-                    udev.settle()
+-                except OSError as e:
+-                    raise ValueError(_("Could not add WWPN %(wwpn)s to zFCP "
+-                                       "device %(devnum)s (%(e)s).")
+-                                     % {'wwpn': self.wwpn,
+-                                         'devnum': self.devnum,
+-                                         'e': e})
+-            else:
+-                # newer zfcp sysfs interface with auto port scan
+-                raise ValueError(_("WWPN %(wwpn)s not found at zFCP device "
+-                                   "%(devnum)s.") % {'wwpn': self.wwpn,
+-                                                     'devnum': self.devnum})
+-        else:
+-            if os.path.exists(portadd):
+-                # older zfcp sysfs interface
+-                log.info("WWPN %(wwpn)s at zFCP device %(devnum)s already "
+-                         "there.", {'wwpn': self.wwpn,
+-                                    'devnum': self.devnum})
+-
+         # create the sysfs directory for the LUN/unit
+         if not os.path.exists(unitdir):
+             try:
+@@ -323,10 +297,7 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+     def offline_device(self):
+         """Remove the zFCP device from the system."""
+ 
+-        portadd = "%s/%s/port_add" % (zfcpsysfs, self.devnum)
+-        portremove = "%s/%s/port_remove" % (zfcpsysfs, self.devnum)
+         unitremove = "%s/%s/%s/unit_remove" % (zfcpsysfs, self.devnum, self.wwpn)
+-        portdir = "%s/%s/%s" % (zfcpsysfs, self.devnum, self.wwpn)
+         devdir = "%s/%s" % (zfcpsysfs, self.devnum)
+ 
+         try:
+@@ -348,42 +319,6 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+                              % {'fcplun': self.fcplun, 'wwpn': self.wwpn,
+                                  'devnum': self.devnum, 'e': e})
+ 
+-        # remove the WWPN only if there are no other LUNs attached
+-        if os.path.exists(portadd):
+-            # only try to remove ports with older zfcp sysfs interface
+-            for lun in os.listdir(portdir):
+-                if lun.startswith("0x") and \
+-                        os.path.isdir(os.path.join(portdir, lun)):
+-                    log.info("Not removing WWPN %s at zFCP device %s since port still has other LUNs, e.g. %s.",
+-                             self.wwpn, self.devnum, lun)
+-                    return True
+-
+-            try:
+-                logged_write_line_to_file(portremove, self.wwpn)
+-            except OSError as e:
+-                raise ValueError(_("Could not remove WWPN %(wwpn)s on zFCP "
+-                                   "device %(devnum)s (%(e)s).")
+-                                 % {'wwpn': self.wwpn,
+-                                     'devnum': self.devnum, 'e': e})
+-
+-        # check if there are other WWPNs existing for the zFCP device number
+-        if os.path.exists(portadd):
+-            # older zfcp sysfs interface
+-            for port in os.listdir(devdir):
+-                if port.startswith("0x") and \
+-                        os.path.isdir(os.path.join(devdir, port)):
+-                    log.info("Not setting zFCP device %s offline since it still has other ports, e.g. %s.",
+-                             self.devnum, port)
+-                    return True
+-        else:
+-            # newer zfcp sysfs interface with auto port scan
+-            luns = glob.glob("%s/0x????????????????/0x????????????????"
+-                             % (devdir,))
+-            if len(luns) != 0:
+-                log.info("Not setting zFCP device %s offline since it still has other LUNs, e.g. %s.",
+-                         self.devnum, luns[0])
+-                return True
+-
+         return True
+ 
+ 
+-- 
+2.45.2
+
+
+From cc67470805d871ff6ec09d554fb4b65a375e5b59 Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Tue, 16 Jul 2024 10:21:00 +0200
+Subject: [PATCH 4/7] blivet/zfcp: change to consolidated persistent device
+ config by zdev (#1802482,#1937049)
+
+Implements the zfcp part of referenced bugs.
+
+https://github.com/ibm-s390-linux/s390-tools/tree/master/zdev/
+handles everything as of
+ibm-s390-linux/s390-tools@06a30ae
+("zdev/dracut: add rd.zfcp cmdline option handling").
+
+It is no longer necessary to perform individual pre-req steps, such as
+setting an FCP device online, when we want to attach a LUN. Just call
+chzdev to configure zfcp LUNs and let it do what is necessary, including
+cio_ignore handling and udev settle.
+
+The spec file update reflects the new dependency on `chzdev` from the
+s390 architecture specific sub-package s390utils-core. Actually, this
+commit here only depends on `chzdev` in older versions already packaged
+and shipped, so no version comparison necessary here.
+
+Since chzdev now implicitly sets the FCP device online
+and there is no more preceding explicit FCP device online,
+move the path over-specification warning after the call to chzdev.
+Otherwise, the FCP device could still be offline and its
+port_type unknown, so has_auto_lun_scan() would get wrong information
+regarding the port_type being NPIV.
+
+Anaconda handles the persistent config of all s390 device types as of
+commit ("write persistent config of any (dasd,zfcp,znet) s390 devices to
+sysroot"), so drop the special handling in zfcp.write().
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/zfcp.py     | 99 +++++++++-------------------------------------
+ python-blivet.spec |  1 +
+ 2 files changed, 20 insertions(+), 80 deletions(-)
+
+diff --git a/blivet/zfcp.py b/blivet/zfcp.py
+index 82751382..38ab5668 100644
+--- a/blivet/zfcp.py
++++ b/blivet/zfcp.py
+@@ -104,8 +104,6 @@ class ZFCPDeviceBase(ABC):
+         if not self.devnum:
+             raise ValueError(_("You have not specified a device number or the number is invalid"))
+ 
+-        self._device_online_path = os.path.join(zfcpsysfs, self.devnum, "online")
+-
+     # Force str and unicode types in case any of the properties are unicode
+     def _to_string(self):
+         return str(self.devnum)
+@@ -113,20 +111,6 @@ class ZFCPDeviceBase(ABC):
+     def __str__(self):
+         return self._to_string()
+ 
+-    def _free_device(self):
+-        """Remove the device from the I/O ignore list to make it visible to the system.
+-
+-        :raises: ValueError if the device cannot be removed from the I/O ignore list
+-        """
+-
+-        if not os.path.exists(self._device_online_path):
+-            log.info("Freeing zFCP device %s", self.devnum)
+-            util.run_program(["zfcp_cio_free", "-d", self.devnum])
+-
+-        if not os.path.exists(self._device_online_path):
+-            raise ValueError(_("zFCP device %s not found, not even in device ignore list.") %
+-                             (self.devnum,))
+-
+     def _set_zfcp_device_online(self):
+         """Set the zFCP device online.
+ 
+@@ -134,10 +118,8 @@ class ZFCPDeviceBase(ABC):
+         """
+ 
+         try:
+-            with open(self._device_online_path) as f:
+-                devonline = f.readline().strip()
+-            if devonline != "1":
+-                logged_write_line_to_file(self._device_online_path, "1")
++            util.run_program(["chzdev", "--enable", "zfcp-host", self.devnum,
++                              "--yes", "--no-root-update", "--force"])
+         except OSError as e:
+             raise ValueError(_("Could not set zFCP device %(devnum)s "
+                                "online (%(e)s).")
+@@ -150,7 +132,8 @@ class ZFCPDeviceBase(ABC):
+         """
+ 
+         try:
+-            logged_write_line_to_file(self._device_online_path, "0")
++            util.run_program(["chzdev", "--disable", "zfcp-host", self.devnum,
++                              "--yes", "--no-root-update", "--force"])
+         except OSError as e:
+             raise ValueError(_("Could not set zFCP device %(devnum)s "
+                                "offline (%(e)s).")
+@@ -163,6 +146,7 @@ class ZFCPDeviceBase(ABC):
+         :returns: True or False
+         """
+ 
++    @abstractmethod
+     def online_device(self):
+         """Initialize the device and make its storage block device(s) ready to use.
+ 
+@@ -170,10 +154,6 @@ class ZFCPDeviceBase(ABC):
+         :raises: ValueError if the device cannot be initialized
+         """
+ 
+-        self._free_device()
+-        self._set_zfcp_device_online()
+-        return True
+-
+     def offline_scsi_device(self):
+         """Find SCSI devices associated to the zFCP device and remove them from the system."""
+ 
+@@ -238,25 +218,15 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+         :raises: ValueError if the device cannot be initialized
+         """
+ 
+-        super().online_device()
+-
+         portdir = "%s/%s/%s" % (zfcpsysfs, self.devnum, self.wwpn)
+-        unitadd = "%s/unit_add" % (portdir)
+         unitdir = "%s/%s" % (portdir, self.fcplun)
+-        failed = "%s/failed" % (unitdir)
+-
+-        # Activating using devnum, WWPN, and LUN despite available zFCP auto LUN scan should still
+-        # be possible as this method was used as a workaround until the support for zFCP auto LUN
+-        # scan devices has been implemented. Just log a warning message and continue.
+-        if has_auto_lun_scan(self.devnum):
+-            log.warning("zFCP device %s in NPIV mode brought online. All LUNs will be activated "
+-                        "automatically although WWPN and LUN have been provided.", self.devnum)
+ 
+         # create the sysfs directory for the LUN/unit
+         if not os.path.exists(unitdir):
+             try:
+-                logged_write_line_to_file(unitadd, self.fcplun)
+-                udev.settle()
++                util.run_program(["chzdev", "--enable", "zfcp-lun",
++                                  "%s:%s:%s" % (self.devnum, self.wwpn, self.fcplun),
++                                  "--yes", "--no-root-update", "--force"])
+             except OSError as e:
+                 raise ValueError(_("Could not add LUN %(fcplun)s to WWPN "
+                                    "%(wwpn)s on zFCP device %(devnum)s "
+@@ -270,48 +240,23 @@ class ZFCPDeviceFullPath(ZFCPDeviceBase):
+                                  'wwpn': self.wwpn,
+                                  'devnum': self.devnum})
+ 
+-        # check the state of the LUN
+-        fail = "0"
+-        try:
+-            f = open(failed, "r")
+-            fail = f.readline().strip()
+-            f.close()
+-        except OSError as e:
+-            raise ValueError(_("Could not read failed attribute of LUN "
+-                               "%(fcplun)s at WWPN %(wwpn)s on zFCP device "
+-                               "%(devnum)s (%(e)s).")
+-                             % {'fcplun': self.fcplun,
+-                                 'wwpn': self.wwpn,
+-                                 'devnum': self.devnum,
+-                                 'e': e})
+-        if fail != "0":
+-            self.offline_device()
+-            raise ValueError(_("Failed LUN %(fcplun)s at WWPN %(wwpn)s on "
+-                               "zFCP device %(devnum)s removed again.")
+-                             % {'fcplun': self.fcplun,
+-                                 'wwpn': self.wwpn,
+-                                 'devnum': self.devnum})
++        # Activating using devnum, WWPN, and LUN despite available zFCP auto LUN scan should still
++        # be possible as this method was used as a workaround until the support for zFCP auto LUN
++        # scan devices has been implemented. Just log a warning message and continue.
++        if has_auto_lun_scan(self.devnum):
++            log.warning("zFCP device %s in NPIV mode brought online. All LUNs will be activated "
++                        "automatically although WWPN and LUN have been provided.", self.devnum)
+ 
+         return True
+ 
+     def offline_device(self):
+         """Remove the zFCP device from the system."""
+ 
+-        unitremove = "%s/%s/%s/unit_remove" % (zfcpsysfs, self.devnum, self.wwpn)
+-        devdir = "%s/%s" % (zfcpsysfs, self.devnum)
+-
+-        try:
+-            self.offline_scsi_device()
+-        except OSError as e:
+-            raise ValueError(_("Could not correctly delete SCSI device of "
+-                               "zFCP %(devnum)s %(wwpn)s %(fcplun)s "
+-                               "(%(e)s).")
+-                             % {'devnum': self.devnum, 'wwpn': self.wwpn,
+-                                 'fcplun': self.fcplun, 'e': e})
+-
+         # remove the LUN
+         try:
+-            logged_write_line_to_file(unitremove, self.fcplun)
++            util.run_program(["chzdev", "--disable", "zfcp-lun",
++                              "%s:%s:%s" % (self.devnum, self.wwpn, self.fcplun),
++                              "--yes", "--no-root-update", "--force"])
+         except OSError as e:
+             raise ValueError(_("Could not remove LUN %(fcplun)s at WWPN "
+                                "%(wwpn)s on zFCP device %(devnum)s "
+@@ -340,7 +285,7 @@ class ZFCPDeviceAutoLunScan(ZFCPDeviceBase):
+         :raises: ValueError if the device cannot be initialized
+         """
+ 
+-        super().online_device()
++        self._set_zfcp_device_online()
+ 
+         if not has_auto_lun_scan(self.devnum):
+             raise ValueError(_("zFCP device %s cannot use auto LUN scan.") % self)
+@@ -480,13 +425,7 @@ class zFCP:
+                 log.warning("%s", str(e))
+ 
+     def write(self, root):
+-        if len(self.fcpdevs) == 0:
+-            return
+-        f = open(root + zfcpconf, "w")
+-        for d in self.fcpdevs:
+-            f.write("%s\n" % (d,))
+-        f.close()
+-
++        pass
+ 
+ 
+ # Create ZFCP singleton
+diff --git a/python-blivet.spec b/python-blivet.spec
+index 38a389ae..ac8d2841 100644
+--- a/python-blivet.spec
++++ b/python-blivet.spec
+@@ -70,6 +70,7 @@ Recommends: libblockdev-swap >= %{libblockdevver}
+ 
+ %ifarch s390 s390x
+ Recommends: libblockdev-s390 >= %{libblockdevver}
++Requires: s390utils-core
+ %endif
+ 
+ Requires: python3-bytesize >= %{libbytesizever}
+-- 
+2.45.2
+
+
+From 6c4e57d78562962f014970c32381891c71f05e3b Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Tue, 31 Jan 2023 12:01:31 +0100
+Subject: [PATCH 5/7] blivet/zfcp: remove no longer used read_config
+ functionality (#1802482,#1937049)
+
+Implements the zfcp part of referenced bugs.
+
+Since
+https://github.com/rhinstaller/anaconda/commit/87ab1ab2a3aa8b95cd75b2f37e0881e5f57656a5
+("Support cio_ignore functionality for zFCP devices (#533492)"),
+/etc/zfcp.conf replaced /tmp/fcpconfig.
+
+Since
+https://github.com/rhinstaller/anaconda/commit/011ea0a1779459ed20990ddf52166aa75a9c1382
+("Remove linuxrc.s390"), /etc/zfcp.conf only exists if the user specified
+dracut cmdline parameter rd.zfcp=.
+
+https://github.com/ibm-s390-linux/s390-tools/tree/master/zdev/
+handles parsing of rd.zfcp= without /etc/zfcp.conf as of
+https://github.com/ibm-s390-linux/s390-tools/commit/06a30ae529a5d6ad2369ed81da056bf3a6147bb6
+("zdev/dracut: add rd.zfcp cmdline option handling").
+
+https://src.fedoraproject.org/rpms/s390utils.git
+no longer writes /etc/zfcp.conf during deprecated parsing of rd.zfcp=
+as of commit
+("zfcp: migrate to consolidated persistent device config with zdev")
+
+Hence, nothing populates /etc/zfcp.conf during installer boot anymore.
+
+Anaconda imports configuration for all s390 device types as of
+commit ("write persistent config of any (dasd,zfcp,znet) s390 devices to
+sysroot"). The only remaining import source is from dracut boot parameters.
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/zfcp.py | 60 ++++++++------------------------------------------
+ 1 file changed, 9 insertions(+), 51 deletions(-)
+
+diff --git a/blivet/zfcp.py b/blivet/zfcp.py
+index 38ab5668..a33eb48b 100644
+--- a/blivet/zfcp.py
++++ b/blivet/zfcp.py
+@@ -45,7 +45,6 @@ def logged_write_line_to_file(fn, value):
+ 
+ zfcpsysfs = "/sys/bus/ccw/drivers/zfcp"
+ scsidevsysfs = "/sys/bus/scsi/devices"
+-zfcpconf = "/etc/zfcp.conf"
+ 
+ 
+ def _is_lun_scan_allowed():
+@@ -323,18 +322,22 @@ class zFCP:
+ 
+     """ ZFCP utility class.
+ 
+-        This class will automatically online to ZFCP drives configured in
+-        /tmp/fcpconfig when the startup() method gets called. It can also be
+-        used to manually configure ZFCP devices through the add_fcp() method.
++        This class is used to manually configure ZFCP devices through the
++        add_fcp() method, which is used by the anaconda GUI or by kickstart.
+ 
+-        As this class needs to make sure that /tmp/fcpconfig configured
++        As this class needs to make sure that configured
+         drives are only onlined once and as it keeps a global list of all ZFCP
+         devices it is implemented as a Singleton.
++
++        In particular, this class does not create objects for any other method
++        that enables ZFCP devices such as rd.zfcp= or any device auto
++        configuration. These methods make zfcp-attached SCSI disk block devices
++        available, which ZFCPDiskDevice [devices/disk.py] can directly
++        discover.
+     """
+ 
+     def __init__(self):
+         self.fcpdevs = set()
+-        self.has_read_config = False
+         self.down = True
+ 
+     # So that users can write zfcp() to get the singleton instance
+@@ -345,46 +348,6 @@ class zFCP:
+         # pylint: disable=unused-argument
+         return self
+ 
+-    def read_config(self):
+-        try:
+-            f = open(zfcpconf, "r")
+-        except OSError:
+-            log.info("no %s; not configuring zfcp", zfcpconf)
+-            return
+-
+-        lines = [x.strip().lower() for x in f.readlines()]
+-        f.close()
+-
+-        for line in lines:
+-            if line.startswith("#") or line == '':
+-                continue
+-
+-            fields = line.split()
+-
+-            # zFCP auto LUN scan available
+-            if len(fields) == 1:
+-                devnum = fields[0]
+-                wwpn = None
+-                fcplun = None
+-            elif len(fields) == 3:
+-                devnum = fields[0]
+-                wwpn = fields[1]
+-                fcplun = fields[2]
+-            elif len(fields) == 5:
+-                # support old syntax of:
+-                # devno scsiid wwpn scsilun fcplun
+-                devnum = fields[0]
+-                wwpn = fields[2]
+-                fcplun = fields[4]
+-            else:
+-                log.warning("Invalid line found in %s: %s", zfcpconf, line)
+-                continue
+-
+-            try:
+-                self.add_fcp(devnum, wwpn, fcplun)
+-            except ValueError as e:
+-                log.warning("%s", str(e))
+-
+     def add_fcp(self, devnum, wwpn=None, fcplun=None):
+         if wwpn and fcplun:
+             d = ZFCPDeviceFullPath(devnum, wwpn, fcplun)
+@@ -410,11 +373,6 @@ class zFCP:
+         if not self.down:
+             return
+         self.down = False
+-        if not self.has_read_config:
+-            self.read_config()
+-            self.has_read_config = True
+-            # read_config calls add_fcp which calls online_device already
+-            return
+ 
+         if len(self.fcpdevs) == 0:
+             return
+-- 
+2.45.2
+
+
+From e119e1e48a8a8bc83ec42d3c6ab31fac7c4a98eb Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Tue, 28 Feb 2023 17:48:04 +0100
+Subject: [PATCH 6/7] respect explicit user choice for full path in zfcp
+ dracut_setup_args
+
+Complements RHBZ#1937030.
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/devices/disk.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/blivet/devices/disk.py b/blivet/devices/disk.py
+index 4ae4a845..edbf41c4 100644
+--- a/blivet/devices/disk.py
++++ b/blivet/devices/disk.py
+@@ -498,7 +498,12 @@ class ZFCPDiskDevice(DiskDevice):
+         from ..zfcp import has_auto_lun_scan
+ 
+         # zFCP auto LUN scan needs only the device ID
+-        if has_auto_lun_scan(self.hba_id):
++        # If the user explicitly over-specified with a full path configuration
++        # respect this choice and emit a full path specification nonetheless.
++        errorlevel = util.run_program(["lszdev", "zfcp-lun", "--configured",
++                                       "%s:%s:%s" % (self.hba_id, self.wwpn,
++                                                     self.fcp_lun)])
++        if has_auto_lun_scan(self.hba_id) and errorlevel != 0:
+             dracut_args = set(["rd.zfcp=%s" % self.hba_id])
+         else:
+             dracut_args = set(["rd.zfcp=%s,%s,%s" % (self.hba_id, self.wwpn, self.fcp_lun,)])
+-- 
+2.45.2
+
+
+From 4c2d39c4fcea9361b60d99327a9eb8b9d89078fb Mon Sep 17 00:00:00 2001
+From: Steffen Maier <maier@linux.ibm.com>
+Date: Tue, 16 Jul 2024 10:22:55 +0200
+Subject: [PATCH 7/7] DASDDevice: dracut_setup_args() without deprecated
+ dasd.conf (#1802482,#1937049)
+
+Implements the dasd part of referenced bugs.
+
+Depends on
+ibm-s390-linux/s390-tools@689b894
+("zdev: add helper to convert from zdev config to dasd_mod.dasd").
+The spec file update reflects the new dependency on `zdev-to-dasd_mod.dasd`
+in the new v2.31.0 of the s390 architecture specific sub-package
+s390utils-core.
+
+Delegate the generation of rd.dasd statements to a helper tool from
+s390-tools, which gets its low-level config information from the
+consolidated persistent configuration mechanism using chzdev.
+
+Signed-off-by: Steffen Maier <maier@linux.ibm.com>
+---
+ blivet/devices/disk.py           | 56 +++-----------------------------
+ blivet/populator/helpers/disk.py |  3 --
+ python-blivet.spec               |  3 +-
+ 3 files changed, 6 insertions(+), 56 deletions(-)
+
+diff --git a/blivet/devices/disk.py b/blivet/devices/disk.py
+index edbf41c4..a849e7ac 100644
+--- a/blivet/devices/disk.py
++++ b/blivet/devices/disk.py
+@@ -530,67 +530,19 @@ class DASDDevice(DiskDevice):
+             :type format: :class:`~.formats.DeviceFormat` or a subclass of it
+             :keyword str wwn: the disk's WWN
+             :keyword busid: bus ID
+-            :keyword opts: options
+-            :type opts: dict with option name keys and option value values
+         """
+         self.busid = kwargs.pop('busid')
+-        self.opts = kwargs.pop('opts')
+         DiskDevice.__init__(self, device, **kwargs)
+ 
+     @property
+     def description(self):
+         return "DASD device %s" % self.busid
+ 
+-    def get_opts(self):
+-        return ["%s=%s" % (k, v) for k, v in self.opts.items() if v == '1']
+-
+     def dracut_setup_args(self):
+-        conf = "/etc/dasd.conf"
+-        line = None
+-        if os.path.isfile(conf):
+-            f = open(conf)
+-            # grab the first line that starts with our bus_id
+-            for l in f.readlines():
+-                if l.startswith(self.busid):
+-                    line = l.rstrip()
+-                    break
+-
+-            f.close()
+-
+-        # See if we got a line.  If not, grab our get_opts
+-        if not line:
+-            line = self.busid
+-            for devopt in self.get_opts():
+-                line += " %s" % devopt
+-
+-        # Create a translation mapping from dasd.conf format to module format
+-        translate = {'use_diag': 'diag',
+-                     'readonly': 'ro',
+-                     'erplog': 'erplog',
+-                     'failfast': 'failfast'}
+-
+-        # this is a really awkward way of determining if the
+-        # feature found is actually desired (1, not 0), plus
+-        # translating that feature into the actual kernel module
+-        # value
+-        opts = []
+-        parts = line.split()
+-        for chunk in parts[1:]:
+-            try:
+-                feat, val = chunk.split('=')
+-                if int(val):
+-                    opts.append(translate[feat])
+-            except (ValueError, KeyError):
+-                # If we don't know what the feature is (feat not in translate
+-                # or if we get a val that doesn't cleanly convert to an int
+-                # we can't do anything with it.
+-                log.warning("failed to parse dasd feature %s", chunk)
+-
+-        if opts:
+-            return set(["rd.dasd=%s(%s)" % (self.busid,
+-                                            ":".join(opts))])
+-        else:
+-            return set(["rd.dasd=%s" % self.busid])
++        devspec = util.capture_output(["/lib/s390-tools/zdev-to-dasd_mod.dasd",
++                                       "persistent", self.busid]).strip()
++        # strip to remove trailing newline, which must not appear in zipl BLS
++        return set(["rd.dasd=%s" % devspec])
+ 
+ 
+ NVMeController = namedtuple("NVMeController", ["name", "serial", "nvme_ver", "id", "subsysnqn",
+diff --git a/blivet/populator/helpers/disk.py b/blivet/populator/helpers/disk.py
+index 3ac3f408..fc47f62a 100644
+--- a/blivet/populator/helpers/disk.py
++++ b/blivet/populator/helpers/disk.py
+@@ -204,9 +204,6 @@ class DASDDevicePopulator(DiskDevicePopulator):
+     def _get_kwargs(self):
+         kwargs = super(DASDDevicePopulator, self)._get_kwargs()
+         kwargs["busid"] = udev.device_get_dasd_bus_id(self.data)
+-        kwargs["opts"] = {}
+-        for attr in ['readonly', 'use_diag', 'erplog', 'failfast']:
+-            kwargs["opts"][attr] = udev.device_get_dasd_flag(self.data, attr)
+ 
+         log.info("%s is a dasd device", udev.device_get_name(self.data))
+         return kwargs
+diff --git a/python-blivet.spec b/python-blivet.spec
+index ac8d2841..81177020 100644
+--- a/python-blivet.spec
++++ b/python-blivet.spec
+@@ -21,6 +21,7 @@ Source1: http://github.com/storaged-project/blivet/archive/%{realname}-%{realver
+ %global libblockdevver 3.0
+ %global libbytesizever 0.3
+ %global pyudevver 0.18
++%global s390utilscorever 2.31.0
+ 
+ BuildArch: noarch
+ 
+@@ -70,7 +71,7 @@ Recommends: libblockdev-swap >= %{libblockdevver}
+ 
+ %ifarch s390 s390x
+ Recommends: libblockdev-s390 >= %{libblockdevver}
+-Requires: s390utils-core
++Requires: s390utils-core >= %{s390utilscorever}
+ %endif
+ 
+ Requires: python3-bytesize >= %{libbytesizever}
+-- 
+2.45.2
+
