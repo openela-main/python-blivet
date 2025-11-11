@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 23%{?prerelease}%{?dist}
+Release: 28%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -62,6 +62,12 @@ Patch28: 0029-Align-sizes-up-for-growable-LVs.patch
 Patch29: 0030-mod_pass_in_stratis_test.patch
 Patch30: 0031-Fix_running_tests_in_FIPS_mode.patch
 Patch31: 0032-Set-persistent-allow-discards-flag-for-new-LUKS-devices.patch
+Patch32: 0033-Do-not-remove-PVs-from-devices-file-if-disabled-or-doesnt-exist.patch
+Patch33: 0034-Include-additional-information-in-PartitioningError.patch
+Patch34: 0035-LVMPV-format-size-fix.patch
+Patch35: 0036-Make-ActionDestroyFormat-optional.patch
+Patch36: 0037-Wipe-end-partition-before-creating-it-as-well-as-the-start.patch
+Patch37: 0038-Add-a-pre-wipe-fixup-function-for-LVM-logical-volume.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -225,6 +231,29 @@ configuration.
 %endif
 
 %changelog
+* Mon Aug 04 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-28
+- Add a pre-wipe fixup function for LVM logical volumes
+  Resolves: RHEL-68368
+
+* Fri May 30 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-27
+- Wipe end partition before creating it as well as the start
+  Resolves: RHEL-76917
+
+* Tue May 20 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-26
+- Make ActionDestroyFormat optional when the device is also scheduled to be removed
+  Resolves: RHEL-8008
+  Resolves: RHEL-8012
+
+* Mon Apr 14 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-25
+- Get the actual PV format size for LVMPV format
+  Resolves: RHEL-74078
+- Include additional information in PartitioningError
+  Resolves: RHEL-8005
+
+* Thu Mar 27 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-24
+- Do not remove PVs from devices file if disabled or doesn't exist
+  Resolves: RHEL-84662
+
 * Tue Mar 11 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-23
 - Set persistent allow-discards flag for newly created LUKS devices
   Resolves: RHEL-82430
