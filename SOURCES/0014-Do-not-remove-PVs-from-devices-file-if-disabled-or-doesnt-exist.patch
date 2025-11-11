@@ -1,0 +1,103 @@
+From 30782ea4482e8118996ffa69f967531515761179 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 20 Jan 2025 13:02:50 +0100
+Subject: [PATCH] Do not remove PVs from devices file if disabled or doesn't
+ exists
+
+When the file doesn't exists the 'lvmdevices --deldev' call will
+fail but it will still create the devices file. This means we now
+have an empty devices file and all subsequent LVM calls will fail.
+
+Resolves: RHEL-65846
+---
+ blivet/formats/lvmpv.py                      | 10 +++++++
+ tests/unit_tests/formats_tests/lvmpv_test.py | 28 ++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/blivet/formats/lvmpv.py b/blivet/formats/lvmpv.py
+index 982233878..aa5cc0a5a 100644
+--- a/blivet/formats/lvmpv.py
++++ b/blivet/formats/lvmpv.py
+@@ -171,6 +171,16 @@ def lvmdevices_remove(self):
+         if not lvm.HAVE_LVMDEVICES:
+             raise PhysicalVolumeError("LVM devices file feature is not supported")
+ 
++        if not os.path.exists(lvm.LVM_DEVICES_FILE):
++            log.debug("Not removing %s from devices file: %s doesn't exist",
++                      self.device, lvm.LVM_DEVICES_FILE)
++            return
++
++        if not flags.lvm_devices_file:
++            log.debug("Not removing %s from devices file: 'lvm_devices_file' flag is set to False",
++                      self.device)
++            return
++
+         try:
+             blockdev.lvm.devices_delete(self.device)
+         except blockdev.LVMError as e:
+diff --git a/tests/unit_tests/formats_tests/lvmpv_test.py b/tests/unit_tests/formats_tests/lvmpv_test.py
+index 8d410f4fd..890e3cb19 100644
+--- a/tests/unit_tests/formats_tests/lvmpv_test.py
++++ b/tests/unit_tests/formats_tests/lvmpv_test.py
+@@ -38,6 +38,11 @@ def test_lvm_devices(self):
+ 
+             mock["blockdev"].lvm.devices_add.assert_not_called()
+ 
++            # LVM devices file not enabled/supported -> devices_delete should not be called
++            fmt._destroy()
++
++            mock["blockdev"].lvm.devices_delete.assert_not_called()
++
+         with self.patches() as mock:
+             # LVM devices file enabled and devices file exists -> devices_add should be called
+             mock["lvm"].HAVE_LVMDEVICES = True
+@@ -47,6 +52,11 @@ def test_lvm_devices(self):
+ 
+             mock["blockdev"].lvm.devices_add.assert_called_with("/dev/test")
+ 
++            # LVM devices file enabled and devices file exists -> devices_delete should be called
++            fmt._destroy()
++
++            mock["blockdev"].lvm.devices_delete.assert_called_with("/dev/test")
++
+         with self.patches() as mock:
+             # LVM devices file enabled and devices file doesn't exist
+             # and no existing VGs present -> devices_add should be called
+@@ -58,6 +68,12 @@ def test_lvm_devices(self):
+ 
+             mock["blockdev"].lvm.devices_add.assert_called_with("/dev/test")
+ 
++            # LVM devices file enabled but devices file doesn't exist
++            # -> devices_delete should not be called
++            fmt._destroy()
++
++            mock["blockdev"].lvm.devices_delete.assert_not_called()
++
+         with self.patches() as mock:
+             # LVM devices file enabled and devices file doesn't exist
+             # and existing VGs present -> devices_add should not be called
+@@ -69,6 +85,12 @@ def test_lvm_devices(self):
+ 
+             mock["blockdev"].lvm.devices_add.assert_not_called()
+ 
++            # LVM devices file enabled but devices file doesn't exist
++            # -> devices_delete should not be called
++            fmt._destroy()
++
++            mock["blockdev"].lvm.devices_delete.assert_not_called()
++
+         with self.patches() as mock:
+             # LVM devices file enabled and devices file exists
+             # but flag set to false -> devices_add should not be called
+@@ -81,5 +103,11 @@ def test_lvm_devices(self):
+ 
+             mock["blockdev"].lvm.devices_add.assert_not_called()
+ 
++            # LVM devices file enabled and devices file exists
++            # but flag set to false -> devices_delete should not be called
++            fmt._destroy()
++
++            mock["blockdev"].lvm.devices_delete.assert_not_called()
++
+             # reset the flag back
+             flags.lvm_devices_file = True

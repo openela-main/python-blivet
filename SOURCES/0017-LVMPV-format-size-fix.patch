@@ -1,0 +1,516 @@
+From 6373572308111c154c323a099103fabaaeace792 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 21 Jan 2025 10:03:17 +0100
+Subject: [PATCH 1/6] Use pvs info from static data to get PV size in PVSize
+
+No need for a special code for this, we can reuse the existing
+code from LVM static data.
+---
+ blivet/tasks/pvtask.py | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/blivet/tasks/pvtask.py b/blivet/tasks/pvtask.py
+index b6f1896a3..3bbab7cbc 100644
+--- a/blivet/tasks/pvtask.py
++++ b/blivet/tasks/pvtask.py
+@@ -27,6 +27,7 @@
+ 
+ from ..errors import PhysicalVolumeError
+ from ..size import Size, B
++from ..static_data import pvs_info
+ 
+ from . import availability
+ from . import task
+@@ -55,13 +56,12 @@ def do_task(self):  # pylint: disable=arguments-differ
+             :raises :class:`~.errors.PhysicalVolumeError`: if size cannot be obtained
+         """
+ 
+-        try:
+-            pv_info = blockdev.lvm.pvinfo(self.pv.device)
+-            pv_size = pv_info.pv_size
+-        except blockdev.LVMError as e:
+-            raise PhysicalVolumeError(e)
++        pvs_info.drop_cache()
++        pv_info = pvs_info.cache.get(self.pv.device)
++        if pv_info is None:
++            raise PhysicalVolumeError("Failed to get PV info for %s" % self.pv.device)
+ 
+-        return Size(pv_size)
++        return Size(pv_info.pv_size)
+ 
+ 
+ class PVResize(task.BasicApplication, dfresize.DFResizeTask):
+
+From cc0ad43477e201c8da8f7bffd04c845ea9e57f1c Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 21 Jan 2025 10:05:13 +0100
+Subject: [PATCH 2/6] Get the actual PV format size for LVMPV format
+
+---
+ blivet/formats/lvmpv.py            | 2 ++
+ blivet/populator/helpers/lvm.py    | 2 ++
+ tests/unit_tests/populator_test.py | 2 ++
+ 3 files changed, 6 insertions(+)
+
+diff --git a/blivet/formats/lvmpv.py b/blivet/formats/lvmpv.py
+index aa5cc0a5a..70f4697fc 100644
+--- a/blivet/formats/lvmpv.py
++++ b/blivet/formats/lvmpv.py
+@@ -102,6 +102,8 @@ def __init__(self, **kwargs):
+         # when set to True, blivet will try to resize the PV to fill all available space
+         self._grow_to_fill = False
+ 
++        self._target_size = self._size
++
+     def __repr__(self):
+         s = DeviceFormat.__repr__(self)
+         s += ("  vg_name = %(vg_name)s  vg_uuid = %(vg_uuid)s"
+diff --git a/blivet/populator/helpers/lvm.py b/blivet/populator/helpers/lvm.py
+index 0cf47ba43..e22c52088 100644
+--- a/blivet/populator/helpers/lvm.py
++++ b/blivet/populator/helpers/lvm.py
+@@ -114,6 +114,8 @@ def _get_kwargs(self):
+                 log.warning("PV %s has no pe_start", name)
+             if pv_info.pv_free:
+                 kwargs["free"] = Size(pv_info.pv_free)
++            if pv_info.pv_size:
++                kwargs["size"] = Size(pv_info.pv_size)
+ 
+         return kwargs
+ 
+diff --git a/tests/unit_tests/populator_test.py b/tests/unit_tests/populator_test.py
+index 2d8175f2a..0429e8d44 100644
+--- a/tests/unit_tests/populator_test.py
++++ b/tests/unit_tests/populator_test.py
+@@ -981,6 +981,7 @@ def test_run(self, *args):
+         pv_info.vg_uuid = sentinel.vg_uuid
+         pv_info.pe_start = 0
+         pv_info.pv_free = 0
++        pv_info.pv_size = "10g"
+ 
+         vg_device = Mock()
+         vg_device.id = 0
+@@ -1012,6 +1013,7 @@ def test_run(self, *args):
+         pv_info.vg_extent_count = 2500
+         pv_info.vg_free_count = 0
+         pv_info.vg_pv_count = 1
++        pv_info.pv_size = "10g"
+ 
+         with patch("blivet.static_data.lvm_info.PVsInfo.cache", new_callable=PropertyMock) as mock_pvs_cache:
+             mock_pvs_cache.return_value = {device.path: pv_info}
+
+From 99fc0b2e9c8c42a894eee7bc6c850364ed85d313 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 21 Jan 2025 13:35:38 +0100
+Subject: [PATCH 3/6] Update PV format size after adding/removing the PV
+ to/from the VG
+
+Unfortunately LVM substracts VG metadata from the reported PV size
+so we need to make sure to update the size after the vgextend and
+vgreduce operation.
+---
+ blivet/devices/lvm.py | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/blivet/devices/lvm.py b/blivet/devices/lvm.py
+index 661dc6e06..93f3ccbe7 100644
+--- a/blivet/devices/lvm.py
++++ b/blivet/devices/lvm.py
+@@ -343,12 +343,24 @@ def _remove(self, member):
+             if lv.status and not status:
+                 lv.teardown()
+ 
++        # update LVMPV format size --> PV format has different size when in VG
++        try:
++            fmt._size = fmt._target_size = fmt._size_info.do_task()
++        except errors.PhysicalVolumeError as e:
++            log.warning("Failed to obtain current size for device %s: %s", fmt.device, e)
++
+     def _add(self, member):
+         try:
+             blockdev.lvm.vgextend(self.name, member.path)
+         except blockdev.LVMError as err:
+             raise errors.LVMError(err)
+ 
++        # update LVMPV format size --> PV format has different size when in VG
++        try:
++            member.format._size = member.format._target_size = member.format._size_info.do_task()
++        except errors.PhysicalVolumeError as e:
++            log.warning("Failed to obtain current size for device %s: %s", member.path, e)
++
+     def _add_log_vol(self, lv):
+         """ Add an LV to this VG. """
+         if lv in self._lvs:
+
+From b6a9d661cd99e6973d8555a1ac587da49fd6d3df Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 21 Jan 2025 14:22:07 +0100
+Subject: [PATCH 4/6] Use LVMPV format size when calculating VG size and free
+ space
+
+For existing PVs we need to check the format size instead of
+simply expecting the format is fully resized to match the size of
+the underlying block device.
+---
+ blivet/devices/lvm.py | 63 ++++++++++++++++++++++++++-----------------
+ 1 file changed, 39 insertions(+), 24 deletions(-)
+
+diff --git a/blivet/devices/lvm.py b/blivet/devices/lvm.py
+index 93f3ccbe7..d0b0b2b9c 100644
+--- a/blivet/devices/lvm.py
++++ b/blivet/devices/lvm.py
+@@ -534,40 +534,55 @@ def reserved_percent(self, value):
+ 
+         self._reserved_percent = value
+ 
+-    def _get_pv_usable_space(self, pv):
++    def _get_pv_metadata_space(self, pv):
++        """ Returns how much space will be used by VG metadata in given PV
++            This depends on type of the PV, PE size and PE start.
++        """
+         if isinstance(pv, MDRaidArrayDevice):
+-            return self.align(pv.size - 2 * pv.format.pe_start)
++            return 2 * pv.format.pe_start
++        else:
++            return pv.format.pe_start
++
++    def _get_pv_usable_space(self, pv):
++        """ Return how much space can be actually used on given PV.
++            This takes into account:
++             - VG metadata that is/will be stored in this PV
++             - the actual PV format size (which might differ from
++               the underlying block device size)
++        """
++
++        if pv.format.exists and pv.format.size and self.exists:
++            # PV format exists, we got its size and VG also exists
++            # -> all metadata is already accounted in the PV format size
++            return pv.format.size
++        elif pv.format.exists and pv.format.size and not self.exists:
++            # PV format exists, we got its size, but the VG doesn't exist
++            # -> metadata size is not accounted in the PV format size
++            return self.align(pv.format.size - self._get_pv_metadata_space(pv))
+         else:
+-            return self.align(pv.size - pv.format.pe_start)
++            # something else -> either the PV format is not yet created or
++            # we for some reason failed to get size of the format, either way
++            # lets use the underlying block device size and calculate the
++            # metadata size ourselves
++            return self.align(pv.size - self._get_pv_metadata_space(pv))
+ 
+     @property
+     def lvm_metadata_space(self):
+-        """ The amount of the space LVM metadata cost us in this VG's PVs """
+-        # NOTE: we either specify data alignment in a PV or the default is used
+-        #       which is both handled by pv.format.pe_start, but LVM takes into
+-        #       account also the underlying block device which means that e.g.
+-        #       for an MD RAID device, it tries to align everything also to chunk
+-        #       size and alignment offset of such device which may result in up
+-        #       to a twice as big non-data area
+-        # TODO: move this to either LVMPhysicalVolume's pe_start property once
+-        #       formats know about their devices or to a new LVMPhysicalVolumeDevice
+-        #       class once it exists
+-        diff = Size(0)
+-        for pv in self.pvs:
+-            diff += pv.size - self._get_pv_usable_space(pv)
+-
+-        return diff
++        """ The amount of the space LVM metadata cost us in this VG's PVs
++            Note: we either specify data alignment in a PV or the default is used
++                  which is both handled by pv.format.pe_start, but LVM takes into
++                  account also the underlying block device which means that e.g.
++                  for an MD RAID device, it tries to align everything also to chunk
++                  size and alignment offset of such device which may result in up
++                  to a twice as big non-data area
++        """
++        return sum(self._get_pv_metadata_space(pv) for pv in self.pvs)
+ 
+     @property
+     def size(self):
+         """ The size of this VG """
+         # TODO: just ask lvm if isModified returns False
+-
+-        # sum up the sizes of the PVs, subtract the unusable (meta data) space
+-        size = sum(pv.size for pv in self.pvs)
+-        size -= self.lvm_metadata_space
+-
+-        return size
++        return sum(self._get_pv_usable_space(pv) for pv in self.pvs)
+ 
+     @property
+     def extents(self):
+
+From cd4ce45b78aae26424294c3e4dd8d082eb985af6 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 21 Jan 2025 14:28:56 +0100
+Subject: [PATCH 5/6] Add more tests for PV and VG size and free space
+
+---
+ tests/storage_tests/devices_test/lvm_test.py | 101 +++++++++++++++++++
+ 1 file changed, 101 insertions(+)
+
+diff --git a/tests/storage_tests/devices_test/lvm_test.py b/tests/storage_tests/devices_test/lvm_test.py
+index f64af8943..2217eeb63 100644
+--- a/tests/storage_tests/devices_test/lvm_test.py
++++ b/tests/storage_tests/devices_test/lvm_test.py
+@@ -25,6 +25,18 @@ def setUp(self):
+             self.assertIsNone(disk.format.type)
+             self.assertFalse(disk.children)
+ 
++    def _get_pv_size(self, pv):
++        out = subprocess.check_output(["pvs", "-o", "pv_size", "--noheadings", "--nosuffix", "--units=b", pv])
++        return blivet.size.Size(out.decode().strip())
++
++    def _get_vg_size(self, vg):
++        out = subprocess.check_output(["vgs", "-o", "vg_size", "--noheadings", "--nosuffix", "--units=b", vg])
++        return blivet.size.Size(out.decode().strip())
++
++    def _get_vg_free(self, vg):
++        out = subprocess.check_output(["vgs", "-o", "vg_free", "--noheadings", "--nosuffix", "--units=b", vg])
++        return blivet.size.Size(out.decode().strip())
++
+     def _clean_up(self):
+         self.storage.reset()
+         for disk in self.storage.disks:
+@@ -74,6 +86,8 @@ def test_lvm_basic(self):
+         self.assertIsInstance(pv, blivet.devices.PartitionDevice)
+         self.assertIsNotNone(pv.format)
+         self.assertEqual(pv.format.type, "lvmpv")
++        pv_size = self._get_pv_size(pv.path)
++        self.assertEqual(pv.format.size, pv_size)
+ 
+         vg = self.storage.devicetree.get_device_by_name(self.vgname)
+         self.assertIsNotNone(vg)
+@@ -84,6 +98,10 @@ def test_lvm_basic(self):
+         self.assertEqual(pv.format.vg_uuid, vg.uuid)
+         self.assertEqual(len(vg.parents), 1)
+         self.assertEqual(vg.parents[0], pv)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
+ 
+         lv = self.storage.devicetree.get_device_by_name("%s-blivetTestLV" % self.vgname)
+         self.assertIsNotNone(lv)
+@@ -131,6 +149,13 @@ def test_lvm_thin(self):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         pool = self.storage.devicetree.get_device_by_name("%s-blivetTestPool" % self.vgname)
+         self.assertIsNotNone(pool)
+         self.assertTrue(pool.is_thin_pool)
+@@ -177,6 +202,14 @@ def _test_lvm_raid(self, seg_type, raid_level, stripe_size=0):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space + vg.reserved_space)
++
+         raidlv = self.storage.devicetree.get_device_by_name("%s-blivetTestRAIDLV" % self.vgname)
+         self.assertIsNotNone(raidlv)
+         self.assertTrue(raidlv.is_raid_lv)
+@@ -233,6 +266,13 @@ def test_lvm_cache(self):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         cachedlv = self.storage.devicetree.get_device_by_name("%s-blivetTestCachedLV" % self.vgname)
+         self.assertIsNotNone(cachedlv)
+         self.assertTrue(cachedlv.cached)
+@@ -272,6 +312,13 @@ def test_lvm_cache_attach(self):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         cachedlv = self.storage.devicetree.get_device_by_name("%s-blivetTestCachedLV" % self.vgname)
+         self.assertIsNotNone(cachedlv)
+         cachepool = self.storage.devicetree.get_device_by_name("%s-blivetTestFastLV" % self.vgname)
+@@ -327,6 +374,13 @@ def test_lvm_cache_create_and_attach(self):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         cachedlv = self.storage.devicetree.get_device_by_name("%s-blivetTestCachedLV" % self.vgname)
+         self.assertIsNotNone(cachedlv)
+ 
+@@ -342,6 +396,13 @@ def test_lvm_cache_create_and_attach(self):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         cachedlv = self.storage.devicetree.get_device_by_name("%s-blivetTestCachedLV" % self.vgname)
+         self.assertIsNotNone(cachedlv)
+         self.assertTrue(cachedlv.cached)
+@@ -371,6 +432,13 @@ def test_lvm_pvs_add_remove(self):
+ 
+         self.storage.do_it()
+ 
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         # create a second PV
+         disk2 = self.storage.devicetree.get_device_by_path(self.vdevs[1])
+         self.assertIsNotNone(disk2)
+@@ -385,6 +453,17 @@ def test_lvm_pvs_add_remove(self):
+         self.storage.do_it()
+         self.storage.reset()
+ 
++        pv1 = self.storage.devicetree.get_device_by_name(pv1.name)
++        pv1_size = self._get_pv_size(pv1.path)
++        self.assertEqual(pv1.format.size, pv1_size)
++
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         # add the PV to the existing VG
+         vg = self.storage.devicetree.get_device_by_name(self.vgname)
+         pv2 = self.storage.devicetree.get_device_by_name(pv2.name)
+@@ -393,6 +472,17 @@ def test_lvm_pvs_add_remove(self):
+         self.storage.devicetree.actions.add(ac)
+         self.storage.do_it()
+ 
++        pv2 = self.storage.devicetree.get_device_by_name(pv2.name)
++        pv2_size = self._get_pv_size(pv2.path)
++        self.assertEqual(pv2.format.size, pv2_size)
++
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         self.assertEqual(pv2.format.vg_name, vg.name)
+ 
+         self.storage.reset()
+@@ -414,6 +504,17 @@ def test_lvm_pvs_add_remove(self):
+ 
+         self.storage.do_it()
+ 
++        pv2 = self.storage.devicetree.get_device_by_name(pv2.name)
++        pv2_size = self._get_pv_size(pv2.path)
++        self.assertEqual(pv2.format.size, pv2_size)
++
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)
++
+         self.assertIsNone(pv1.format.type)
+ 
+         self.storage.reset()
+
+From a4a7791a150e190089c8f935c7a5aae7fa9bc5a5 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 21 Jan 2025 15:16:29 +0100
+Subject: [PATCH 6/6] Add a separate test case for LVMPV smaller than the block
+ device
+
+---
+ tests/storage_tests/devices_test/lvm_test.py | 50 ++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/tests/storage_tests/devices_test/lvm_test.py b/tests/storage_tests/devices_test/lvm_test.py
+index 2217eeb63..25d9d71bb 100644
+--- a/tests/storage_tests/devices_test/lvm_test.py
++++ b/tests/storage_tests/devices_test/lvm_test.py
+@@ -524,3 +524,53 @@ def test_lvm_pvs_add_remove(self):
+         self.assertIsNotNone(vg)
+         self.assertEqual(len(vg.pvs), 1)
+         self.assertEqual(vg.pvs[0].name, pv2.name)
++
++    def test_lvm_pv_size(self):
++        disk = self.storage.devicetree.get_device_by_path(self.vdevs[0])
++        self.assertIsNotNone(disk)
++        self.storage.initialize_disk(disk)
++
++        pv = self.storage.new_partition(size=blivet.size.Size("100 MiB"), fmt_type="lvmpv",
++                                        parents=[disk])
++        self.storage.create_device(pv)
++
++        blivet.partitioning.do_partitioning(self.storage)
++
++        self.storage.do_it()
++        self.storage.reset()
++
++        pv = self.storage.devicetree.get_device_by_name(pv.name)
++        self.assertIsNotNone(pv)
++
++        pv.format.update_size_info()
++        self.assertTrue(pv.format.resizable)
++
++        ac = blivet.deviceaction.ActionResizeFormat(pv, blivet.size.Size("50 MiB"))
++        self.storage.devicetree.actions.add(ac)
++
++        self.storage.do_it()
++        self.storage.reset()
++
++        pv = self.storage.devicetree.get_device_by_name(pv.name)
++        self.assertIsNotNone(pv)
++        self.assertEqual(pv.format.size, blivet.size.Size("50 MiB"))
++        pv_size = self._get_pv_size(pv.path)
++        self.assertEqual(pv_size, pv.format.size)
++
++        vg = self.storage.new_vg(name=self.vgname, parents=[pv])
++        self.storage.create_device(vg)
++
++        self.storage.do_it()
++        self.storage.reset()
++
++        pv = self.storage.devicetree.get_device_by_name(pv.name)
++        self.assertIsNotNone(pv)
++        pv_size = self._get_pv_size(pv.path)
++        self.assertEqual(pv_size, pv.format.size)
++
++        vg = self.storage.devicetree.get_device_by_name(self.vgname)
++        self.assertIsNotNone(vg)
++        vg_size = self._get_vg_size(vg.name)
++        self.assertEqual(vg_size, vg.size)
++        vg_free = self._get_vg_free(vg.name)
++        self.assertEqual(vg_free, vg.free_space)

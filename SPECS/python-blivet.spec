@@ -5,7 +5,7 @@ Version: 3.10.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 16%{?prerelease}%{?dist}
+Release: 23%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPL-2.1-or-later
 %global realname blivet
@@ -28,6 +28,16 @@ Patch8: 0010-Fix_running_tests_in_FIPS_mode.patch
 Patch9: 0011-Make-GPT-default-label-type-on-all-architectures.patch
 Patch10: 0012-Fix-crash-on-ppc64le-with-GPT.patch
 Patch11: 0013-Set-persistent-allow-discards-flag-for-new-LUKS-devices.patch
+Patch12: 0014-Do-not-remove-PVs-from-devices-file-if-disabled-or-doesnt-exist.patch
+Patch13: 0015-iscsi-Use-node-startup-onboot-option-for-Login.patch
+Patch14: 0016-Make-sure-selinux_test-doesnt-try-to-create-mountpoints.patch
+Patch15: 0017-LVMPV-format-size-fix.patch
+Patch16: 0018-Include-additional-information-in-PartitioningError.patch
+Patch17: 0019-Make-ActionDestroyFormat-optional.patch
+Patch18: 0020-Wipe-end-partition-before-creating-it-as-well-as-the-start.patch
+Patch19: 0021-Tell-LVM-DBus-to-refresh-its-internal-status-during-reset.patch
+Patch20: 0022-Change-expected-Stratis-metadata-size.patch
+Patch21: 0023-Add-a-pre-wipe-fixup-function-for-LVM-logical-volume.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -122,6 +132,41 @@ make DESTDIR=%{buildroot} install
 %{python3_sitelib}/*
 
 %changelog
+* Mon Aug 04 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-23
+- Add a pre-wipe fixup function for LVM logical volumes
+  Resolves: RHEL-93966
+
+* Tue Jul 8 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-22
+- tests: Change expected Stratis metadata size for stratisd 3.7.0
+  Resolves: RHEL-102299
+
+* Tue Jul 01 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-21
+- Tell LVM DBus to refresh it's internal status during reset
+  Resolves: RHEL-93967
+
+* Fri May 30 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-20
+- Wipe end partition before creating it as well as the start
+  Resolves: RHEL-93967
+
+* Tue May 20 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-19
+- Make ActionDestroyFormat optional when the device is also scheduled to be removed
+  Resolves: RHEL-84685
+  Resolves: RHEL-84663
+
+* Mon Apr 14 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-18
+- Get the actual PV format size for LVMPV format
+  Resolves: RHEL-74076
+- Include additional information in PartitioningError
+  Resolves: RHEL-84686
+
+* Thu Mar 27 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-17
+- Do not remove PVs from devices file if disabled or doesn't exist
+  Resolves: RHEL-65846
+- iscsi: Use node.startup=onboot option for Login
+  Resolves: RHEL-53719
+- tests: Make sure selinux_test doesn't try to create mountpoints
+  Resolves: RHEL-78988
+
 * Tue Mar 11 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-16
 - Set persistent allow-discards flag for newly created LUKS devices
   Resolves: RHEL-82884

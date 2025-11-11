@@ -1,0 +1,65 @@
+From 598902388a09e2dd60b0b0f1e556c4661899be68 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 1 Aug 2025 15:03:09 +0200
+Subject: [PATCH] Add a pre-wipe fixup function for LVM logical volumes
+
+LVs scheduled to be removed are always activated to remove the
+format during installation. If there is a read-only LV with the
+skip activation flag with MD metadata this means after activating
+the LV to remove the format the MD array is auto-assembled by udev
+preventing us from removing it. For this special case, we simply
+stop the array before removing the format.
+
+Resolves: RHEL-93966
+---
+ blivet/deviceaction.py |  3 +++
+ blivet/devices/lvm.py  | 19 +++++++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/blivet/deviceaction.py b/blivet/deviceaction.py
+index 2e6a8489..6590898f 100644
+--- a/blivet/deviceaction.py
++++ b/blivet/deviceaction.py
+@@ -766,6 +766,9 @@ class ActionDestroyFormat(DeviceAction):
+             if hasattr(self.device, 'set_rw'):
+                 self.device.set_rw()
+ 
++            if hasattr(self.device, 'pre_format_destroy'):
++                self.device.pre_format_destroy()
++
+             self.format.destroy()
+             udev.settle()
+             if isinstance(self.device, PartitionDevice) and self.device.disklabel_supported:
+diff --git a/blivet/devices/lvm.py b/blivet/devices/lvm.py
+index d0b0b2b9..10ed2c94 100644
+--- a/blivet/devices/lvm.py
++++ b/blivet/devices/lvm.py
+@@ -2791,6 +2791,25 @@ class LVMLogicalVolumeDevice(LVMLogicalVolumeBase, LVMInternalLogicalVolumeMixin
+         except blockdev.LVMError as err:
+             raise errors.LVMError(err)
+ 
++    def pre_format_destroy(self):
++        """ Fixup needed to run before wiping this device """
++        if self.ignore_skip_activation > 0:
++            # the LV was not activated during the initial scan so if there is an MD array on it
++            # it will now also get activated and we need to stop it to be able to remove the LV
++            try:
++                info = blockdev.md.examine(self.path)
++            except blockdev.MDRaidError:
++                pass
++            else:
++                # give udev a bit time to activate the array so we can deactivate it again
++                time.sleep(5)
++                log.info("MD metadata found on LV with skip activation, stopping the array %s",
++                         info.device)
++                try:
++                    blockdev.md.deactivate(info.device)
++                except blockdev.MDRaidError as err:
++                    log.info("failed to deactivate %s: %s", info.device, str(err))
++
+     @type_specific
+     def _pre_create(self):
+         LVMLogicalVolumeBase._pre_create(self)
+-- 
+2.50.1
+

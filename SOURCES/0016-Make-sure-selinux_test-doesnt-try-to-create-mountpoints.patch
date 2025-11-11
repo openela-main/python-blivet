@@ -1,0 +1,26 @@
+From 8195fb13faa587737780f174651964c4f074f482 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 3 Jul 2024 15:49:34 +0200
+Subject: [PATCH] tests: Make sure selinux_test doesn't try to create
+ mountpoints
+
+This is a unit test so it shouldn't try to create directories
+anywhere.
+
+Resolves: RHEL-78988
+---
+ tests/unit_tests/formats_tests/selinux_test.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tests/unit_tests/formats_tests/selinux_test.py b/tests/unit_tests/formats_tests/selinux_test.py
+index 484e745a4..ea2f516be 100644
+--- a/tests/unit_tests/formats_tests/selinux_test.py
++++ b/tests/unit_tests/formats_tests/selinux_test.py
+@@ -23,6 +23,7 @@ def setUp(self):
+     @patch("blivet.tasks.fsmount.BlockDev.fs.mount", return_value=True)
+     @patch.object(fs.FS, "_pre_setup", return_value=True)
+     @patch("os.access", return_value=True)
++    @patch("os.path.isdir", return_value=True)
+     # pylint: disable=unused-argument
+     def exec_mount_selinux_format(self, formt, *args):
+         """ Test of correct selinux context parameter value when mounting """

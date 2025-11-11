@@ -1,0 +1,36 @@
+From e5ad3beb216d25a601d8f35c2b2a97d15cbb0d39 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 3 Sep 2024 10:40:27 +0200
+Subject: [PATCH] tests: Change expected Stratis metadata size for stratisd
+ 3.7.0
+
+Stratis changes its metadata and the way "stratis-predict-usage"
+predicts its size so we need to change our expectations too.
+
+Resolves: RHEL-102299
+---
+ tests/unit_tests/devicefactory_test.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tests/unit_tests/devicefactory_test.py b/tests/unit_tests/devicefactory_test.py
+index 0a5e6a839..89ca34a33 100644
+--- a/tests/unit_tests/devicefactory_test.py
++++ b/tests/unit_tests/devicefactory_test.py
+@@ -942,7 +942,7 @@ def _get_size_delta(self, devices=None):
+             :keyword devices: list of factory-managed devices or None
+             :type devices: list(:class:`blivet.devices.StorageDevice`) or NoneType
+         """
+-        return Size("550 MiB")  # huge stratis pool metadata
++        return Size("1.3 GiB")  # huge stratis pool metadata
+ 
+     def _validate_factory_device(self, *args, **kwargs):
+         device = args[0]
+@@ -968,7 +968,7 @@ def _validate_factory_device(self, *args, **kwargs):
+         else:
+             self.assertAlmostEqual(device.pool.size,
+                                    device.size,
+-                                   delta=Size("600 MiB"))
++                                   delta=Size("1.3 GiB"))
+ 
+         self.assertEqual(device.pool.encrypted, kwargs.get("container_encrypted", False))
+ 
