@@ -1,52 +1,35 @@
 Summary:  A python module for system storage configuration
 Name: python-blivet
 Url: https://storageapis.wordpress.com/projects/blivet
-Version: 3.10.0
+Version: 3.13.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 23%{?prerelease}%{?dist}
+Release: 5%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPL-2.1-or-later
 %global realname blivet
 %global realversion %{version}%{?prerelease}
-Source0: http://github.com/storaged-project/blivet/archive/%{realname}-%{realversion}.tar.gz
-Source1: http://github.com/storaged-project/blivet/archive/%{realname}-%{realversion}-tests.tar.gz
+Source0: http://github.com/storaged-project/blivet/releases/download/%{realname}-%{realversion}/%{realname}-%{realversion}.tar.gz
+Source1: http://github.com/storaged-project/blivet/releases/download/%{realname}-%{realversion}/%{realname}-%{realversion}-tests.tar.gz
 
 %if 0%{?rhel} >= 9
 Patch0: 0001-remove-btrfs-plugin.patch
 %endif
 
-Patch1: 0002-Fix-skipping-btrfs-calls-when-libblockdev-btrfs-plugin-is-missing.patch
-Patch2: 0003-XFS-resize-test-fix.patch
-Patch3: 0004-Run-mkfs-xfs-with-force-option-by-default.patch
-Patch4: 0005-consolidated-s390-device-configuration.patch
-Patch5: 0007-Fix-checking-for-NVMe-plugin-availability.patch
-Patch6: 0008-Align-sizes-up-for-growable-LVs.patch
-Patch7: 0009-mod_pass_in_stratis_test.patch
-Patch8: 0010-Fix_running_tests_in_FIPS_mode.patch
-Patch9: 0011-Make-GPT-default-label-type-on-all-architectures.patch
-Patch10: 0012-Fix-crash-on-ppc64le-with-GPT.patch
-Patch11: 0013-Set-persistent-allow-discards-flag-for-new-LUKS-devices.patch
-Patch12: 0014-Do-not-remove-PVs-from-devices-file-if-disabled-or-doesnt-exist.patch
-Patch13: 0015-iscsi-Use-node-startup-onboot-option-for-Login.patch
-Patch14: 0016-Make-sure-selinux_test-doesnt-try-to-create-mountpoints.patch
-Patch15: 0017-LVMPV-format-size-fix.patch
-Patch16: 0018-Include-additional-information-in-PartitioningError.patch
-Patch17: 0019-Make-ActionDestroyFormat-optional.patch
-Patch18: 0020-Wipe-end-partition-before-creating-it-as-well-as-the-start.patch
-Patch19: 0021-Tell-LVM-DBus-to-refresh-its-internal-status-during-reset.patch
-Patch20: 0022-Change-expected-Stratis-metadata-size.patch
-Patch21: 0023-Add-a-pre-wipe-fixup-function-for-LVM-logical-volume.patch
+Patch2: 0002-iSCSI-dont-crash-when-LUN-ID-256.patch
+Patch3: 0003-Fix-luks-save_passphrase-for-missing-format-context.patch
+Patch4: 0004-Fix-getting-iSCSI-firmware-initiator-name.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
 %global partedver 1.8.1
 %global pypartedver 3.10.4
 %global utillinuxver 2.15.1
-%global libblockdevver 3.0
+%global libblockdevver 3.4.0
 %global libbytesizever 0.3
 %global pyudevver 0.18
+%global s390utilscorever 2.31.0
 
 BuildArch: noarch
 
@@ -70,19 +53,16 @@ python module.
 %package -n python3-%{realname}
 Summary: A python3 package for examining and modifying storage configuration.
 
-%{?python_provide:%python_provide python3-%{realname}}
-
 BuildRequires: gettext
 BuildRequires: python3-devel
-BuildRequires: python3-setuptools
 
-Requires: python3
 Requires: python3-pyudev >= %{pyudevver}
 Requires: parted >= %{partedver}
 Requires: python3-pyparted >= %{pypartedver}
 Requires: libselinux-python3
 Requires: python3-libmount
 Requires: python3-blockdev >= %{libblockdevver}
+Requires: python3-dasbus
 Recommends: libblockdev-btrfs >= %{libblockdevver}
 Recommends: libblockdev-crypto >= %{libblockdevver}
 Recommends: libblockdev-dm >= %{libblockdevver}
@@ -92,8 +72,10 @@ Recommends: libblockdev-lvm >= %{libblockdevver}
 Recommends: libblockdev-mdraid >= %{libblockdevver}
 Recommends: libblockdev-mpath >= %{libblockdevver}
 Recommends: libblockdev-nvme >= %{libblockdevver}
+Recommends: libblockdev-part >= %{libblockdevver}
 Recommends: libblockdev-swap >= %{libblockdevver}
 Recommends: libblockdev-s390 >= %{libblockdevver}
+Recommends: s390utils-core >= %{s390utilscorever}
 
 Requires: python3-bytesize >= %{libbytesizever}
 Requires: util-linux >= %{utillinuxver}
@@ -111,6 +93,9 @@ configuration.
 %prep
 %autosetup -n %{realname}-%{realversion} -N
 %autosetup -n %{realname}-%{realversion} -b1 -p1
+
+%generate_buildrequires
+%pyproject_buildrequires
 
 %build
 make
@@ -132,6 +117,28 @@ make DESTDIR=%{buildroot} install
 %{python3_sitelib}/*
 
 %changelog
+* Wed Feb 04 2026 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-5
+- Fix getting iSCSI firmware initiator name
+  Resolves: RHEL-145882
+
+* Tue Jan 20 2026 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-4
+- Fix luks save_passphrase for missing format context
+  Resolves: RHEL-142610
+
+* Mon Nov 03 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-3
+- iSCSI: don't crash when LUN ID >= 256
+  Resolves: RHEL-122305
+- Remove the safe_dbus module
+  Related: RHEL-122305
+
+* Wed Oct 29 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-2
+- Temporarily reintroduce the safe_dbus module
+  Related: RHEL-115005
+
+* Wed Oct 08 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-1
+- Update to blivet 3.13.0 upstream release
+  Resolves: RHEL-115005
+
 * Mon Aug 04 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.10.0-23
 - Add a pre-wipe fixup function for LVM logical volumes
   Resolves: RHEL-93966

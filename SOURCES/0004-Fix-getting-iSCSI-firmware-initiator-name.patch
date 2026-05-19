@@ -1,0 +1,56 @@
+From 6d1457276335fb8b4874acc1e4809a086505aef1 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 3 Feb 2026 14:23:33 +0100
+Subject: [PATCH 1/2] iscsi: Fix calling initiator methods without argument
+
+If arguments are not specified we default to None and trying to
+expand it results in TypeError.
+
+Resolves: RHEL-145882
+---
+ blivet/iscsi.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/blivet/iscsi.py b/blivet/iscsi.py
+index 2592572a8..0a389a60f 100644
+--- a/blivet/iscsi.py
++++ b/blivet/iscsi.py
+@@ -188,7 +188,10 @@ def _call_initiator_method(self, method, args=None):
+         """
+         proxy = util.SystemBus.get_proxy(UDISKS_SERVICE, UDISKS_MANAGER_PATH, INITIATOR_IFACE)
+         try:
+-            ret = getattr(proxy, method)(*args)
++            if args is None:
++                ret = getattr(proxy, method)()
++            else:
++                ret = getattr(proxy, method)(*args)
+         except DBusError as e:
+             raise errors.ISCSIError(str(e)) from e
+         else:
+
+From 553cb7d029a0803e74bc9c07e686a17d7d05e90e Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 4 Feb 2026 12:03:00 +0100
+Subject: [PATCH 2/2] iscsi: Fix getting firmware initiator name
+
+With the move to dasbus for DBus operations, the returned value
+is no longer a tuple.
+
+Resolves: RHEL-145882
+---
+ blivet/iscsi.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/blivet/iscsi.py b/blivet/iscsi.py
+index 0a389a60f..e9da9e7af 100644
+--- a/blivet/iscsi.py
++++ b/blivet/iscsi.py
+@@ -155,7 +155,7 @@ def __init__(self):
+ 
+         if flags.ibft:
+             try:
+-                initiatorname = self._call_initiator_method("GetFirmwareInitiatorName")[0]
++                initiatorname = self._call_initiator_method("GetFirmwareInitiatorName")
+                 self._initiator = initiatorname
+             except Exception as e:  # pylint: disable=broad-except
+                 log.info("failed to get initiator name from iscsi firmware: %s", str(e))

@@ -1,0 +1,91 @@
+From f496c4c42d4ba4331909b0a9c7749cf9f581840d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Renaud=20M=C3=A9trich?= <rmetrich@redhat.com>
+Date: Fri, 17 Oct 2025 14:21:06 +0200
+Subject: [PATCH 1/2] iSCSI: don't crash when LUN ID >= 256
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When LUN ID >= 256, systemd udev function format_lun_number() generates
+an address of the form "lun-0x...".
+Due to this, using int(lun) fails with a backtrace.
+
+Signed-off-by: Renaud Métrich <rmetrich@redhat.com>
+
+Resolves: RHEL-122305
+---
+ blivet/devices/disk.py | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/blivet/devices/disk.py b/blivet/devices/disk.py
+index d9907fda3..04800e54d 100644
+--- a/blivet/devices/disk.py
++++ b/blivet/devices/disk.py
+@@ -28,6 +28,7 @@
+ from gi.repository import GLib
+ 
+ import os
++import re
+ from collections import namedtuple
+ 
+ from .. import errors
+@@ -354,8 +355,17 @@ def __init__(self, device, **kwargs):
+         self.offload = kwargs.pop("offload")
+         name = kwargs.pop("name")
+         self.target = kwargs.pop("target")
++        lun = kwargs.pop("lun")
+         try:
+-            self.lun = int(kwargs.pop("lun"))
++            self.lun = int(lun)
++        except ValueError:
++            # See systemd udev function format_lun_number()
++            m = re.fullmatch('0x([0-9a-fA-F]{4})([0-9a-fA-F]{4})00000000', lun)
++            if m is None:
++                log.warning("Failed to extract hex from lun '%s'", lun)
++                self.lun = None
++            else:
++                self.lun = int(m.group(1), 16) + (1 << 16) * int(m.group(2), 16)
+         except TypeError as e:
+             log.warning("Failed to set lun attribute of iscsi disk: %s", e)
+             self.lun = None
+
+From 0a5a1bbb6e180cba9be6e70869129e5123aebd85 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 20 Oct 2025 11:19:39 +0200
+Subject: [PATCH 2/2] tests: Add a simple test case for parsing iSCSI lun
+
+Related: RHEL-122305
+---
+ tests/unit_tests/devices_test/disk_test.py | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/tests/unit_tests/devices_test/disk_test.py b/tests/unit_tests/devices_test/disk_test.py
+index e414aeb4c..f6a011200 100644
+--- a/tests/unit_tests/devices_test/disk_test.py
++++ b/tests/unit_tests/devices_test/disk_test.py
+@@ -1,7 +1,7 @@
+ import unittest
+ from unittest.mock import patch
+ 
+-from blivet.devices import DiskDevice
++from blivet.devices import DiskDevice, iScsiDiskDevice
+ from blivet.devicelibs import disk as disklib
+ from blivet.devicelibs import raid
+ from blivet.size import Size
+@@ -47,3 +47,16 @@ def test_disk_raid_properties(self):
+             self.assertIsNone(test3.raid_level)
+             self.assertIsNone(test3.raid_stripe_size)
+             self.assertIsNone(test3.raid_disk_count)
++
++
++class iScsiDiskDeviceTestCase(unittest.TestCase):
++    def test_iscsi_lun(self):
++        kwargs = {"node": "", "ibft": "", "nic": "", "initiator": "",
++                  "offload": False, "name": "", "target": "",
++                  "address": "", "port": "", "iface": "", "id_path": ""}
++
++        disk1 = iScsiDiskDevice("test1", lun="1", **kwargs)
++        self.assertEqual(disk1.lun, 1)
++
++        disk2 = iScsiDiskDevice("test1", lun="0x0101000000000000", **kwargs)
++        self.assertEqual(disk2.lun, 257)

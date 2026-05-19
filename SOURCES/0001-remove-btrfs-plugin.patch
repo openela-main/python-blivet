@@ -1,6 +1,6 @@
-From 8b527ee85b6594d506d445ff4c30579cccef8ae6 Mon Sep 17 00:00:00 2001
+From 6af9f6b4a7f16b24e26abbdda3d1ec9117549863 Mon Sep 17 00:00:00 2001
 From: Vojtech Trefny <vtrefny@redhat.com>
-Date: Wed, 11 Nov 2020 13:24:55 +0100
+Date: Thu, 26 Sep 2024 09:36:45 +0200
 Subject: [PATCH] Remove btrfs from requested libblockdev plugins
 
 ---
@@ -8,21 +8,21 @@ Subject: [PATCH] Remove btrfs from requested libblockdev plugins
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/blivet/__init__.py b/blivet/__init__.py
-index 14bd5c61..1410d78e 100644
+index f4b8f317..f23118d7 100644
 --- a/blivet/__init__.py
 +++ b/blivet/__init__.py
 @@ -63,9 +63,9 @@ gi.require_version("BlockDev", "3.0")
  from gi.repository import GLib
  from gi.repository import BlockDev as blockdev
  if arch.is_s390():
--    _REQUESTED_PLUGIN_NAMES = set(("lvm", "btrfs", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "s390", "nvme", "fs"))
-+    _REQUESTED_PLUGIN_NAMES = set(("lvm", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "s390", "nvme", "fs"))
+-    _REQUESTED_PLUGIN_NAMES = set(("lvm", "btrfs", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "s390", "nvme", "fs", "part"))
++    _REQUESTED_PLUGIN_NAMES = set(("lvm", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "s390", "nvme", "fs", "part"))
  else:
--    _REQUESTED_PLUGIN_NAMES = set(("lvm", "btrfs", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "nvme", "fs"))
-+    _REQUESTED_PLUGIN_NAMES = set(("lvm", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "nvme", "fs"))
-
- _requested_plugins = blockdev.plugin_specs_from_names(_REQUESTED_PLUGIN_NAMES)
- try:
---
-2.26.2
+-    _REQUESTED_PLUGIN_NAMES = set(("lvm", "btrfs", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "nvme", "fs", "part"))
++    _REQUESTED_PLUGIN_NAMES = set(("lvm", "swap", "crypto", "loop", "mdraid", "mpath", "dm", "nvme", "fs", "part"))
+ 
+ blockdev.utils_set_log_level(syslog.LOG_INFO)
+ 
+-- 
+2.46.1
 
