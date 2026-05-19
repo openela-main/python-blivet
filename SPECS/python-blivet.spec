@@ -23,7 +23,7 @@ Version: 3.6.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 28%{?prerelease}%{?dist}
+Release: 29%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPLv2+
 %global realname blivet
@@ -68,6 +68,7 @@ Patch34: 0035-LVMPV-format-size-fix.patch
 Patch35: 0036-Make-ActionDestroyFormat-optional.patch
 Patch36: 0037-Wipe-end-partition-before-creating-it-as-well-as-the-start.patch
 Patch37: 0038-Add-a-pre-wipe-fixup-function-for-LVM-logical-volume.patch
+Patch38: 0039-iSCSI-dont-crash-when-LUN-ID-256.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -231,6 +232,10 @@ configuration.
 %endif
 
 %changelog
+* Mon Nov 03 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-29
+- iSCSI: don't crash when LUN ID >= 256
+  Resolves: RHEL-122858
+
 * Mon Aug 04 2025 Vojtech Trefny <vtrefny@redhat.com> - 3.6.0-28
 - Add a pre-wipe fixup function for LVM logical volumes
   Resolves: RHEL-68368
