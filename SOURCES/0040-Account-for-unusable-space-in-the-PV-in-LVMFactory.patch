@@ -1,0 +1,28 @@
+From 8992929a6fcf0e702b3d5a5da7a9bf493a6e9d51 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 28 Jan 2026 09:35:36 +0100
+Subject: [PATCH] Account for unusable space in the PV in LVMFactory
+
+When calculating the amount of space needed in the factory, we
+need to take PV metadata and alignment in account to make sure
+the VG has enough free space for the LV which is being created.
+
+Resolves: RHEL-39981
+---
+ blivet/devicefactory.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/blivet/devicefactory.py b/blivet/devicefactory.py
+index 6f460f6d2..003254eac 100644
+--- a/blivet/devicefactory.py
++++ b/blivet/devicefactory.py
+@@ -1413,6 +1413,9 @@ def _get_total_space(self):
+                 space -= self.vg.free_space
+                 # we need to account for the LVM metadata being placed somewhere
+                 space += self.vg.lvm_metadata_space
++                # account for unusable space in the PV (difference between PV size and its usable
++                # space), this is dues to PV metadata and data alignment to
++                space += sum(pv.size - self.vg._get_pv_usable_space(pv) for pv in self.vg.parents)
+             else:
+                 # we need to account for the LVM metadata being placed on each disk
+                 # (and thus taking up to one extent from each disk)
