@@ -5,7 +5,7 @@ Version: 3.13.0
 
 #%%global prerelease .b2
 # prerelease, if defined, should be something like .a1, .b1, .b2.dev1, or .c2
-Release: 5%{?prerelease}%{?dist}
+Release: 8%{?prerelease}%{?dist}
 Epoch: 1
 License: LGPL-2.1-or-later
 %global realname blivet
@@ -20,6 +20,9 @@ Patch0: 0001-remove-btrfs-plugin.patch
 Patch2: 0002-iSCSI-dont-crash-when-LUN-ID-256.patch
 Patch3: 0003-Fix-luks-save_passphrase-for-missing-format-context.patch
 Patch4: 0004-Fix-getting-iSCSI-firmware-initiator-name.patch
+Patch5: 0005-Account-for-unusable-space-in-the-PV-in-LVMFactory.patch
+Patch6: 0006-Fix-PV-overhead-calculation-in-LVMFactory-_get_total_space.patch
+Patch7: 0007-When-starting-stratis-pool-always-call-StartPool-with-FD-list.patch
 
 # Versions of required components (done so we make sure the buildrequires
 # match the requires versions of things).
@@ -117,6 +120,18 @@ make DESTDIR=%{buildroot} install
 %{python3_sitelib}/*
 
 %changelog
+* Fri May 29 2026 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-8
+- When starting stratis pool always call StartPool with FD list
+  Resolves: RHEL-177473
+
+* Mon May 18 2026 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-7
+- Fix PV overhead calculation in LVMFactory._get_total_space
+  Resolves: RHEL-45174
+
+* Thu Apr 16 2026 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-6
+- Account for unusable space in the PV in LVMFactory
+  Resolves: RHEL-45174
+
 * Wed Feb 04 2026 Vojtech Trefny <vtrefny@redhat.com> - 3.13.0-5
 - Fix getting iSCSI firmware initiator name
   Resolves: RHEL-145882

@@ -1,0 +1,145 @@
+From 4a80985547daf427851246dc5d0a69b0ee9c90bd Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 28 Apr 2026 12:44:23 +0200
+Subject: [PATCH 1/2] Fix PV overhead calculation in
+ LVMFactory._get_total_space
+
+The previous fix (fdae8e91) had two issues:
+
+1. It double-counted PV metadata: lvm_metadata_space already added the
+   PV metadata, and the new sum(pv.size - usable) also includes it
+   (since usable = align(size - metadata)).
+
+2. When switching PV types (partition -> MD RAID), _configure() removes
+   old PVs before _get_total_space() is called, so self.vg.parents is
+   empty and the sum evaluates to 0 -- no overhead is accounted for.
+
+Fix by replacing both the lvm_metadata_space line and the per-PV
+overhead line with a single correct calculation: when parents exist,
+use sum(pv.size - usable) which covers both metadata and alignment
+loss; when parents are empty (PV type switch), fall back to the same
+estimate used for new VGs (len(disks) * pe_size).
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+Resolves: RHEL-45174
+---
+ blivet/devicefactory.py | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/blivet/devicefactory.py b/blivet/devicefactory.py
+index 43a9c0eb6..a255d4035 100644
+--- a/blivet/devicefactory.py
++++ b/blivet/devicefactory.py
+@@ -1440,11 +1440,11 @@ def _get_total_space(self):
+             if self.vg:
+                 space += sum(p.size for p in self.vg.parents)
+                 space -= self.vg.free_space
+-                # we need to account for the LVM metadata being placed somewhere
+-                space += self.vg.lvm_metadata_space
+-                # account for unusable space in the PV (difference between PV size and its usable
+-                # space), this is dues to PV metadata and data alignment to
+-                space += sum(pv.size - self.vg._get_pv_usable_space(pv) for pv in self.vg.parents)
++                # account for unusable space in the PV (PV metadata and data alignment)
++                if self.vg.parents:
++                    space += sum(pv.size - self.vg._get_pv_usable_space(pv) for pv in self.vg.parents)
++                else:
++                    space += len(self.disks) * self._pe_size
+             else:
+                 # we need to account for the LVM metadata being placed on each disk
+                 # (and thus taking up to one extent from each disk)
+
+From 7fb94c20155a0d6c6872f2f05b7e5547fa623907 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Tue, 28 Apr 2026 16:29:40 +0200
+Subject: [PATCH 2/2] Use worst-case PV overhead in LVMFactory._get_total_space
+
+When _get_total_space computes the target total PV space, it needs to
+account for PV overhead (metadata + PE alignment loss). Previously it
+used the current PV overhead as a correction, but after manage_size_sets
+shrinks the PV partitions, PE alignment losses change unpredictably --
+smaller PVs can have up to pe_size-1 more alignment loss per PV.
+
+Use worst-case overhead (metadata + pe_size per PV) instead. The
+pe_size term covers maximum PE alignment loss plus parted alignment
+rounding. This guarantees the VG has enough usable space regardless
+of how PE alignment shifts after PV resizing.
+
+Maximum over-allocation is N * pe_size (e.g. 24 MiB for 6 PVs with
+4 MiB PE), which is negligible relative to total VG size.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+Resolves: RHEL-45174
+---
+ blivet/devicefactory.py                | 14 ++++++++++--
+ tests/unit_tests/devicefactory_test.py | 30 ++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/blivet/devicefactory.py b/blivet/devicefactory.py
+index a255d4035..3697b73ca 100644
+--- a/blivet/devicefactory.py
++++ b/blivet/devicefactory.py
+@@ -1440,9 +1440,19 @@ def _get_total_space(self):
+             if self.vg:
+                 space += sum(p.size for p in self.vg.parents)
+                 space -= self.vg.free_space
+-                # account for unusable space in the PV (PV metadata and data alignment)
++                # Worst-case PV overhead: metadata + pe_size per PV.
++                # PE alignment losses change when manage_size_sets resizes PVs,
++                # so current overhead (already in sum - free) is not enough.
+                 if self.vg.parents:
+-                    space += sum(pv.size - self.vg._get_pv_usable_space(pv) for pv in self.vg.parents)
++                    worst_case_overhead = sum(
++                        self.vg._get_pv_metadata_space(pv) + self._pe_size
++                        for pv in self.vg.parents
++                    )
++                    current_overhead = sum(
++                        pv.size - self.vg._get_pv_usable_space(pv)
++                        for pv in self.vg.parents
++                    )
++                    space += max(worst_case_overhead - current_overhead, Size(0))
+                 else:
+                     space += len(self.disks) * self._pe_size
+             else:
+diff --git a/tests/unit_tests/devicefactory_test.py b/tests/unit_tests/devicefactory_test.py
+index 0d4e461b2..3b7e7ef98 100644
+--- a/tests/unit_tests/devicefactory_test.py
++++ b/tests/unit_tests/devicefactory_test.py
+@@ -600,6 +600,36 @@ def test_lv_unique_name(self, *args):  # pylint: disable=unused-argument,argumen
+         device2 = self._factory_device(device_type, **kwargs)
+         self.assertEqual(device2.lvname, "name00")
+ 
++    @patch("blivet.formats.lvmpv.LVMPhysicalVolume.formattable", return_value=True)
++    @patch("blivet.formats.lvmpv.LVMPhysicalVolume.destroyable", return_value=True)
++    @patch("blivet.static_data.lvm_info.blockdev.lvm.lvs", return_value=[])
++    @patch("blivet.devices.lvm.LVMVolumeGroupDevice.type_external_dependencies", return_value=set())
++    @patch("blivet.devices.lvm.LVMLogicalVolumeBase.type_external_dependencies", return_value=set())
++    @patch("blivet.formats.fs.Ext4FS.formattable", return_value=True)
++    @patch("blivet.formats.fs.XFS.formattable", return_value=True)
++    def test_lvm_shrink_pv_overhead(self, *args):  # pylint: disable=unused-argument
++        if self.device_type != devicefactory.DeviceTypes.LVM:
++            self.skipTest("only applies to plain LVM")
++
++        device_type = self.device_type
++
++        # Create a large LV filling most of the VG, then shrink it.
++        # _get_total_space must use worst-case PV overhead so that after
++        # manage_size_sets shrinks the PV partitions, the VG still has
++        # enough usable space (PE alignment losses change with PV size).
++        kwargs = {"disks": self.b.disks,
++                  "size": Size("1500 MiB"),
++                  "fstype": "ext4"}
++        device = self._factory_device(device_type, **kwargs)
++        vg = device.raw_device.container
++        self.assertGreaterEqual(vg.free_space, Size(0))
++
++        kwargs["device"] = device
++        kwargs["size"] = Size("200 MiB")
++        device = self._factory_device(device_type, **kwargs)
++        vg = device.raw_device.container
++        self.assertGreaterEqual(vg.free_space, Size(0))
++
+ 
+ class LVMThinPFactoryTestCase(LVMFactoryTestCase):
+     # TODO: check that the LV we get is a thin pool

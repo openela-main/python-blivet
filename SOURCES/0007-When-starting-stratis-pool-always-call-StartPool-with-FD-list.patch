@@ -1,0 +1,43 @@
+From 9c449967523e3c12391fb7d341ea7b10b87e3712 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Thu, 14 May 2026 17:11:20 +0200
+Subject: [PATCH] When starting stratis pool always call StartPool with FD list
+
+Stratis 3.9.0 switched to zbus which seems to be more strict when
+validating parameters and requires the file destriptor list to be
+always present, even when not used e.g. when "unlock_method" is
+set to False for StartPool.
+Using the GLibClientUnix client makes sure the FD list is passed
+to the DBus call and we also need to set a valid index to the
+list instead of -1.
+
+Resolves: RHEL-177473
+---
+ blivet/devicelibs/stratis.py | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/blivet/devicelibs/stratis.py b/blivet/devicelibs/stratis.py
+index a7c2e6a3a..981dfe688 100644
+--- a/blivet/devicelibs/stratis.py
++++ b/blivet/devicelibs/stratis.py
+@@ -196,7 +196,7 @@ def _unlock_pool_new(pool_uuid, method=None, passphrase=None, keyfile=None):
+ 
+         key_arg = (True, UnixFD(fd))
+     else:
+-        key_arg = (False, -1)
++        key_arg = (False, 0)
+ 
+     try:
+         proxy = util.SystemBus.get_proxy(STRATIS_SERVICE, STRATIS_PATH, STRATIS_MANAGER_INTF_R8,
+@@ -364,8 +364,9 @@ def start_pool(pool_uuid):
+     stratis_info.drop_cache()
+ 
+     try:
+-        proxy = util.SystemBus.get_proxy(STRATIS_SERVICE, STRATIS_PATH, STRATIS_MANAGER_INTF_R8)
+-        ((succ, _uuid), rc, err) = proxy.StartPool(pool_uuid, "uuid", (False, (False, 0)), (False, -1),
++        proxy = util.SystemBus.get_proxy(STRATIS_SERVICE, STRATIS_PATH, STRATIS_MANAGER_INTF_R8,
++                                         client=GLibClientUnix)
++        ((succ, _uuid), rc, err) = proxy.StartPool(pool_uuid, "uuid", (False, (False, 0)), (False, 0),
+                                                    timeout=STRATIS_CALL_TIMEOUT)
+     except DBusError as e:
+         raise StratisError("Failed to start stratis pool '%s': %s" % (pool_uuid, str(e)))
